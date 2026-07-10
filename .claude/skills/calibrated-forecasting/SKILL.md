@@ -60,11 +60,15 @@ A calibrated forecast: the **probability as a number** (+ range), the **referenc
 from, the **Fermi decomposition**, **confidence stated separately** from the probability, and the
 **indicators + review date** for updating. Never a bare hedge word ("likely", "probable") in place of a number.
 
-## MVP note (Phase 1)
+## Persistence — the `calibration-tracker` MCP (Phase 3, available)
 
-No persistent calibration tracker yet (Phase 3): you cannot read your own past accuracy to correct for a
-personal over/under-confidence bias. Reason the number from the steps above, mark the forecast **un-scored**,
-and log it so a later phase can Brier-score it against the outcome *(Tetlock C086)*.
+The `calibration-tracker` MCP server now persists forecasts and computes your Brier track record. After the
+human gate, **commit** the number with `log_forecast(case_id, question, probability, resolution_criteria,
+horizon, judgment_source="analyst_confirmed")` — it **locks** the question + probability (only the outcome is
+appended later). When the outcome is known, `resolve_forecast(forecast_id, outcome, resolved_at)`;
+`get_calibration_report()` returns your Brier + a calibration table over resolved forecasts *(Tetlock C086)*.
+The probability is still **your** judgment — the tool validates, persists, and scores; it never invents the
+number, and `analyst_confirmed` is asserted by this skill after a human read-back, not verified by the tool.
 
 ## Grounding
 

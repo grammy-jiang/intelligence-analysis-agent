@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "calibration-tracker": {
+      "command": "python3",
+      "args": ["-m", "mcp_servers.calibration_tracker"],
+      "env": {}
+    }
+  }
+}

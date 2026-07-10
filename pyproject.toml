@@ -1,0 +1,17 @@
+[project]
+name = "intelligence-analysis-agent"
+version = "0.3.0"
+description = "Intelligence-analysis agent — Phase 3 MCP state layer (calibration-tracker, evidence-ledger, ach-engine)"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=2.3",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["mcp_servers*"]
