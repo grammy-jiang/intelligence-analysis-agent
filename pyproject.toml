@@ -5,6 +5,7 @@ description = "Intelligence-analysis agent — Phase 3 MCP state layer (calibrat
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.3",
+    "Pillow>=10",
 ]
 
 [project.optional-dependencies]

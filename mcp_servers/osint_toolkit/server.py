@@ -85,10 +85,22 @@ def fetch(url: str, confirmed: bool = False) -> FetchedArtifact:
     except EgressError as e:
         audit.record("fetch", {"host": "?"}, "-", f"blocked: {e}")
         raise ToolError(f"egress guard blocked the URL: {e}") from e
-    audit.record("fetch", {"host": host}, ip, "attempt")
     if not OSINT_LIVE:
+        audit.record("fetch", {"host": host}, ip, "attempt (live off)")
         raise ToolError("live fetch disabled (set OSINT_LIVE=1). Guard/gate/audit ran; IP pinned to " + ip)
-    raise ToolError("no live fetch transport configured for this deployment")
+    from .egress import fetch_pinned
+
+    try:
+        final_url, body, ctype = fetch_pinned(url)  # re-validates every redirect hop; pinned TLS
+    except EgressError as e:
+        audit.record("fetch", {"host": host}, ip, f"blocked: {e}")
+        raise ToolError(f"egress guard blocked during fetch: {e}") from e
+    tok = artifacts.put(body)
+    audit.record("fetch", {"host": host}, ip, "ok")
+    _session_urls.add(final_url)
+    return FetchedArtifact(
+        artifact_ref=tok, host=host, content_type=ctype, sha256=artifacts.compute_hash(tok), size=len(body)
+    )
 
 
 @mcp.tool
@@ -107,12 +119,19 @@ def extract_exif(artifact_ref: str) -> ExifData:
     hardening — magic-byte check, size cap, no shell-out — is enforced here.)"""
     try:
         detected = artifacts.detect_type(artifact_ref)
+        data = artifacts.read(artifact_ref)
     except ArtifactError as e:
         raise ToolError(str(e)) from e
-    note = "candidate; verify before use"
     if detected is None or not detected.startswith("image/"):
-        note = f"artifact is not a recognized image ({detected}); EXIF not extracted"
-    return ExifData(artifact_ref=artifact_ref, detected_type=detected, fields={}, note=note)
+        return ExifData(
+            artifact_ref=artifact_ref, detected_type=detected, fields={},
+            note=f"artifact is not a recognized image ({detected}); EXIF not extracted",
+        )
+    from .exif import parse_exif
+
+    fields = parse_exif(data)  # memory-safe, resource-limited; empty on any parser error
+    note = "candidate; verify the location/fields before use — a planted artifact can carry false EXIF"
+    return ExifData(artifact_ref=artifact_ref, detected_type=detected, fields=fields, note=note)
 
 
 @mcp.tool
