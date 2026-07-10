@@ -74,14 +74,18 @@ I see — or NOT see?"; and (3) the **absence of expected evidence** — the dog
 item for source **reliability A–F** and information **credibility 1–6**, as a stated judgment.
 **Use the `source-evaluation` skill** to grade each item — it supplies the two-axis grade, the diagnosticity
 read (which hypotheses the item does and does not discriminate), corroboration status, and a deception check.
-*(MVP: no source-trust registry to read a source's history — grade from what is known now and say so.)*
+**Persist via the `evidence-ledger` MCP**: `add_evidence` (raw item, `pii` flag, expected observables keyed by
+hypothesis_id) then `grade_evidence` (A–F / 1–6, `judgment_source`); `get_source_history` reads a source's
+cross-case grade record. *(A grade change later marks dependent ACH cells stale — see Step 6.)*
 → writes `Evidence`.
 
 ### Step 4 — Build the ACH matrix *(Heuer C234; ACH Step 3)*
 Lay hypotheses across the top, evidence down the side, as a markdown table. Work **across each row**: for
 each evidence item, rate its consistency with *each* hypothesis (e.g. `C` consistent / `I` inconsistent /
 `N/A` not applicable, plus a strength). Rate row-by-row (is this item consistent with each hypothesis?), not
-column-by-column.
+column-by-column. **Back it with the `ach-engine` MCP**: `create_matrix` (from the Step-2 hypotheses) mints
+stable `hypothesis_id`s; `rate_cell` records each consistency judgment (`judgment_source`), superseding with a
+`reason` to change one.
 → writes `ACH matrix`.
 
 ### Step 5 — Surface and test key assumptions *(CIA Primer Key-Assumptions-Check; C009)*
@@ -94,6 +98,9 @@ confidence and what would undermine it.
 Now work **down each column**: the diagnostic power is in *inconsistency*. Refine or delete evidence that is
 consistent with everything (non-diagnostic — it does not help). Rank hypotheses by **fewest strong
 inconsistencies**; the leading one is the hardest to disprove, not the best supported. (Invariant 3.)
+**Use `ach-engine` `score_matrix`** — it computes the least-inconsistency ranking and **refuses (listing the
+blocking cells) if any rests on a since-changed grade or an unconfirmed `model_draft` rating**; re-rate those,
+then re-score.
 → writes `Ranking`.
 
 ### Step 7 — Independent critique — delegate to the reviewer subagents *(Kahneman C009; Jervis C006; Primer C051)*
@@ -123,8 +130,8 @@ and record any dissent. **Use the `calibrated-forecasting` skill** to produce th
 base rate first, Fermi-decompose, adjust moderately, probability as a number with confidence stated
 separately, and an update plan. *(Phase 3: after the human gate approves it, commit the number to the
 `calibration-tracker` MCP via `log_forecast` with `judgment_source="analyst_confirmed"` — it locks the
-question + probability so it can be Brier-scored when the outcome resolves. The evidence-ledger and ach-engine
-MCPs are not built yet — Steps 3–6 stay in-context for now.)*
+question + probability so it can be Brier-scored when the outcome resolves. All three MCPs
+(calibration-tracker, evidence-ledger, ach-engine) are now available — Steps 3/4/6 persist to them.)*
 → writes `Judgment`.
 
 ### Step 10 — Report, then the HUMAN APPROVAL gate *(Heuer ACH Step 7; Kent C012, C020, C167)*

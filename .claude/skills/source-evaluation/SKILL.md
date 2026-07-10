@@ -63,11 +63,14 @@ reason), a diagnosticity note (which hypotheses it does and does not discriminat
 deception flag if warranted, and the per-hypothesis expected / absent observables. Never a bare "reliable
 source says X" without the two grades and the diagnosticity read.
 
-## MVP note (Phase 1)
+## Persistence — the `evidence-ledger` MCP (Phase 3, available)
 
-No persistent **source-trust registry** yet (Phase 3): you cannot read a source's credibility history to
-inform the grade. Grade from what is known now, say so, and note that repeated use of the same source should
-later be tracked *(Masterman C044)*.
+The `evidence-ledger` MCP now persists graded evidence and a cross-case source-trust view. `add_evidence`
+stores the raw item (with a REQUIRED `pii` flag — source identity is life-safety); `grade_evidence` records
+the A–F / 1–6 grade with its `judgment_source`; **`get_source_history(source_id)`** returns this source's
+ordered `analyst_confirmed` grade record and the direction of its most recent change *(Masterman C044)* — read
+it before grading a repeat source. The grade is still **your** judgment — the tool validates the scale and
+persists, it never invents the grade — and a regrade marks any dependent ACH cell stale for re-rating.
 
 ## Grounding
 

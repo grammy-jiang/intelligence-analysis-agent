@@ -4,6 +4,16 @@
       "command": "python3",
       "args": ["-m", "mcp_servers.calibration_tracker"],
       "env": {}
+    },
+    "evidence-ledger": {
+      "command": "python3",
+      "args": ["-m", "mcp_servers.evidence_ledger"],
+      "env": {}
+    },
+    "ach-engine": {
+      "command": "python3",
+      "args": ["-m", "mcp_servers.ach_engine"],
+      "env": {}
     }
   }
 }
