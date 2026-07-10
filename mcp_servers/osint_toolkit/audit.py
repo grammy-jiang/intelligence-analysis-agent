@@ -1,0 +1,78 @@
+"""Hash-chained egress audit log (design v3 control #10). Per-tool ALLOWLIST of loggable fields (fail-closed:
+a field not listed is never logged, so a future secret-bearing field can't leak by omission — not a denylist)."""
+
+from __future__ import annotations
+
+import sqlite3
+
+from ..common import GENESIS, ChainMismatch, ChainStatus, now_iso, row_hash
+
+# Loggable arg fields per tool. Note: `query` (search) and the full `url` (fetch) are DELIBERATELY absent —
+# they may carry case/source identifiers; only the validated host + connector are recorded.
+LOGGABLE_FIELDS = {
+    "search": ("connector", "max_results"),
+    "fetch": ("host",),
+    "reverse_image_search": ("connector",),
+    "get_map_tile": ("connector", "zoom"),
+}
+
+
+class EgressAudit:
+    def __init__(self, db_path: str):
+        self._conn = sqlite3.connect(db_path)
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute(
+            "CREATE TABLE IF NOT EXISTS egress_log("
+            "seq INTEGER PRIMARY KEY AUTOINCREMENT, tool TEXT NOT NULL, fields TEXT NOT NULL, "
+            "resolved_ip TEXT NOT NULL, outcome TEXT NOT NULL, at TEXT NOT NULL, "
+            "prev_hash TEXT NOT NULL, row_hash TEXT NOT NULL)"
+        )
+        self._conn.commit()
+
+    def close(self) -> None:
+        self._conn.close()
+
+    def _head(self) -> str:
+        r = self._conn.execute("SELECT row_hash FROM egress_log ORDER BY seq DESC LIMIT 1").fetchone()
+        return r["row_hash"] if r else GENESIS
+
+    def record(self, tool: str, fields: dict, resolved_ip: str, outcome: str) -> None:
+        allow = LOGGABLE_FIELDS.get(tool, ())
+        logged = {k: fields[k] for k in allow if k in fields}  # fail-closed allowlist
+        payload = {"tool": tool, "fields": logged, "resolved_ip": resolved_ip, "outcome": outcome,
+                   "at": now_iso()}
+        prev = self._head()
+        rh = row_hash(prev, payload)
+        import json
+
+        self._conn.execute(
+            "INSERT INTO egress_log(tool, fields, resolved_ip, outcome, at, prev_hash, row_hash) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (tool, json.dumps(logged, sort_keys=True), resolved_ip, outcome, payload["at"], prev, rh),
+        )
+        self._conn.commit()
+
+    def verify_chain(self) -> ChainStatus:
+        import json
+
+        prev = GENESIS
+        verified = 0
+        for r in self._conn.execute("SELECT * FROM egress_log ORDER BY seq ASC").fetchall():
+            payload = {"tool": r["tool"], "fields": json.loads(r["fields"]), "resolved_ip": r["resolved_ip"],
+                       "outcome": r["outcome"], "at": r["at"]}
+            expected = row_hash(prev, payload)
+            if expected != r["row_hash"] or r["prev_hash"] != prev:
+                return ChainStatus(
+                    server="osint-egress-audit", scope="all", ok=False, head_hash={"egress_log": prev},
+                    rows_verified=verified,
+                    mismatch=ChainMismatch(table="egress_log", row_id=str(r["seq"]), expected_hash=expected,
+                                           got_hash=r["row_hash"]),
+                )
+            prev = r["row_hash"]
+            verified += 1
+        return ChainStatus(server="osint-egress-audit", scope="all", ok=True, head_hash={"egress_log": prev},
+                           rows_verified=verified)
+
+    def count(self) -> int:
+        return self._conn.execute("SELECT COUNT(*) c FROM egress_log").fetchone()["c"]
