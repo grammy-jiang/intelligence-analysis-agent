@@ -41,8 +41,10 @@ only after `source-evaluation` grades it (until then ach-engine refuses to score
 6. **Archive as an ingested proposal** (`osint-toolkit.propose_to_ledger`) — `source_channel='ingested'`,
    ungraded. Its note is an unverified annotation, never a judgment.
 7. **Grade before trusting** — run `source-evaluation` on the ingested item (reliability A–F / credibility
-   1–6, corroboration, **deception check** — the subject may control the footprint). Only a confirmed grade
-   lets it into the ACH matrix.
+   1–6, corroboration, **deception check** — the subject may control the footprint). For a serious D&D risk,
+   delegate to the **`deception-detection-reviewer`** subagent, which interrogates the whole ingested chain
+   for feedback-controlled channels and cover-story fit (Masterman). Only a confirmed grade lets it into the
+   ACH matrix.
 
 ## Inputs / Output
 

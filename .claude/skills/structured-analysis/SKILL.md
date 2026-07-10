@@ -113,6 +113,9 @@ each producing findings in its name-the-flaw / correction / residual-uncertainty
   where a source could be manipulated *(Primer C051; Masterman C002; ACH Step 6)*.
 - **`calibration-forecasting-reviewer`** — run once a probability exists (Step 9), or now if the ranking
   already implies confidence: over/under-confidence, base-rate neglect, an untested single-outcome read.
+- **`deception-detection-reviewer`** — when the evidence chain includes ingested/OSINT material or a source
+  who could control the footprint: interrogate for denial & deception — a channel being fed to mislead,
+  too-neat corroboration, the absence that fits a cover story *(Masterman, Double-Cross D&D)*.
 Collect all findings into `Findings`.
 
 ### Step 8 — Loop back and revise *(Heuer C249; ACH Step 4)*
