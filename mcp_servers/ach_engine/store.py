@@ -218,7 +218,15 @@ class ACHStore:
         eff = self._effective_cells(matrix_id)
         blockers: list[str] = []
         for c in eff:
-            if self._cell_stale(c):
+            # collect-then-grade (decision #8): the EVIDENCE must carry an effective analyst_confirmed grade
+            # in evidence-ledger before any of its cells may be scored — an ingested/ungraded artifact can never
+            # reach scored output regardless of the cell rating's own judgment_source.
+            if self.staleness.latest_grade_source(c["evidence_id"]) != "analyst_confirmed":
+                blockers.append(
+                    f"({c['evidence_id']}, {c['hypothesis_id']}) evidence not analyst_confirmed-graded: "
+                    "grade it in evidence-ledger first"
+                )
+            elif self._cell_stale(c):
                 blockers.append(f"({c['evidence_id']}, {c['hypothesis_id']}) stale: re-rate after grade change")
             elif c["judgment_source"] == "model_draft":
                 blockers.append(f"({c['evidence_id']}, {c['hypothesis_id']}) model_draft: confirm before scoring")
