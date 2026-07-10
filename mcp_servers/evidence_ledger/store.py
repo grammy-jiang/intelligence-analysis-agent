@@ -132,8 +132,10 @@ class EvidenceStore:
         )
         self._conn.commit()
         self._append_manifest("grades", rh)
-        # cross-server: a (re)grade marks dependent ACH cells stale.
+        # cross-server signals: a (re)grade marks dependent ACH cells stale, and records the grade's
+        # judgment_source so ach-engine can refuse to score evidence that was never analyst_confirmed-graded.
         self.staleness.mark_stale(evidence_id, "grade")
+        self.staleness.mark_graded(evidence_id, judgment_source)
 
     def grade_evidence(
         self, evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale=""

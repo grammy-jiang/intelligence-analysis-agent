@@ -48,3 +48,25 @@ def test_grade_change_blocks_scoring_until_rerated(tmp_path):
         ach.close()
         ev.close()
         st.close()
+
+
+def test_score_refuses_ungraded_evidence(tmp_path):
+    """collect-then-grade (finding B): evidence rated in ach but never analyst_confirmed-graded in
+    evidence-ledger cannot be scored — an ingested/ungraded artifact never reaches scored output."""
+    clk = Clock()
+    st = StalenessStore(str(tmp_path / "stale.db"), clock=clk)
+    ach = ACHStore(str(tmp_path / "ach.db"), st, analyst_id="t", clock=clk)
+    try:
+        ref = ach.create_matrix("c", ["H1", "H2"])
+        h1 = ref.hypotheses[0].hypothesis_id
+        ach.rate_cell(ref.matrix_id, "E_ungraded", h1, "I", "strong", "analyst_confirmed")
+        with pytest.raises(ACHError, match="not analyst_confirmed-graded"):
+            ach.score_matrix(ref.matrix_id)
+        st.mark_graded("E_ungraded", "analyst_confirmed")  # now graded
+        assert ach.score_matrix(ref.matrix_id).leading is not None
+        st.mark_graded("E_ungraded", "model_draft")  # downgraded (latest signal wins)
+        with pytest.raises(ACHError, match="not analyst_confirmed-graded"):
+            ach.score_matrix(ref.matrix_id)
+    finally:
+        ach.close()
+        st.close()

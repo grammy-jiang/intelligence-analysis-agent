@@ -18,6 +18,8 @@ def ach(tmp_path):
 
 
 def _rate(ach, mid, ev, hid, cons, strength="strong", js="analyst_confirmed"):
+    # evidence must carry an effective analyst_confirmed grade before its cells can be scored
+    ach.staleness.mark_graded(ev, "analyst_confirmed")
     return ach.rate_cell(mid, ev, hid, cons, strength, js)
 
 

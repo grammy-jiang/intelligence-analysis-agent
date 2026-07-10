@@ -1,8 +1,13 @@
-"""Shared cross-server staleness store (the narrow coupling between evidence-ledger and ach-engine).
+"""Shared cross-server EVIDENCE-SIGNAL store (the narrow coupling between evidence-ledger and ach-engine).
 
-evidence-ledger WRITES stale events when a grade changes; ach-engine READS them at score time. This is a
-deliberate, scoped, out-of-protocol side channel (design v3 "DB file topology"): evidence-ledger may write
-only the staleness signal here — never ach-engine's core tables. Append-only + hash-chained.
+Two append-only, hash-chained signals evidence-ledger WRITES and ach-engine READS:
+- `stale_events` — a grade changed; dependent ACH cells must be re-rated before scoring.
+- `grade_signals` — a grade was recorded with a given judgment_source; ach-engine refuses to SCORE a cell whose
+  evidence has no effective `analyst_confirmed` grade (closes the collect-then-grade hole — an ingested,
+  ungraded artifact can never reach scored output; design v3 decision #3/#8).
+
+Deliberate, scoped, out-of-protocol side channel (design "DB file topology"): evidence-ledger may write only
+these signals here — never ach-engine's core tables.
 """
 
 from __future__ import annotations
@@ -12,6 +17,8 @@ import time
 from collections.abc import Callable
 
 from .common import GENESIS, now_iso, row_hash
+
+_TABLES = ("stale_events", "grade_signals")
 
 
 class StalenessStore:
@@ -28,6 +35,11 @@ class StalenessStore:
                 evidence_id TEXT NOT NULL, changed_field TEXT NOT NULL,
                 marked_at TEXT NOT NULL, marked_ts REAL NOT NULL,
                 prev_hash TEXT NOT NULL, row_hash TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS grade_signals(
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                evidence_id TEXT NOT NULL, judgment_source TEXT NOT NULL,
+                marked_at TEXT NOT NULL, marked_ts REAL NOT NULL,
+                prev_hash TEXT NOT NULL, row_hash TEXT NOT NULL);
             """
         )
         self._conn.commit()
@@ -35,14 +47,18 @@ class StalenessStore:
     def close(self) -> None:
         self._conn.close()
 
-    def _head(self) -> str:
-        r = self._conn.execute("SELECT row_hash FROM stale_events ORDER BY seq DESC LIMIT 1").fetchone()
+    def _head(self, table: str) -> str:
+        assert table in _TABLES
+        r = self._conn.execute(
+            f"SELECT row_hash FROM {table} ORDER BY seq DESC LIMIT 1"  # noqa: S608 - internal literal
+        ).fetchone()
         return r["row_hash"] if r else GENESIS
 
+    # ---- staleness signal --------------------------------------------------
     def mark_stale(self, evidence_id: str, changed_field: str) -> None:
         ts = self._clock()
         payload = {"evidence_id": evidence_id, "changed_field": changed_field, "marked_at": now_iso()}
-        prev = self._head()
+        prev = self._head("stale_events")
         rh = row_hash(prev, payload)
         self._conn.execute(
             "INSERT INTO stale_events(evidence_id, changed_field, marked_at, marked_ts, prev_hash, row_hash) "
@@ -52,7 +68,6 @@ class StalenessStore:
         self._conn.commit()
 
     def latest_stale_ts(self, evidence_id: str) -> float | None:
-        """Fresh read (WAL) of the most recent stale mark for an evidence item, or None."""
         r = self._conn.execute(
             "SELECT MAX(marked_ts) m FROM stale_events WHERE evidence_id=?", (evidence_id,)
         ).fetchone()
@@ -64,3 +79,25 @@ class StalenessStore:
             (evidence_id,),
         ).fetchone()
         return r["changed_field"] if r else None
+
+    # ---- grade-confirmation signal ----------------------------------------
+    def mark_graded(self, evidence_id: str, judgment_source: str) -> None:
+        ts = self._clock()
+        payload = {"evidence_id": evidence_id, "judgment_source": judgment_source, "marked_at": now_iso()}
+        prev = self._head("grade_signals")
+        rh = row_hash(prev, payload)
+        self._conn.execute(
+            "INSERT INTO grade_signals(evidence_id, judgment_source, marked_at, marked_ts, prev_hash, row_hash) "
+            "VALUES(?,?,?,?,?,?)",
+            (evidence_id, judgment_source, payload["marked_at"], ts, prev, rh),
+        )
+        self._conn.commit()
+
+    def latest_grade_source(self, evidence_id: str) -> str | None:
+        """The judgment_source of the most recent grade for an evidence item, or None if never graded.
+        ach-engine requires this to be 'analyst_confirmed' before an evidence item's cells may be scored."""
+        r = self._conn.execute(
+            "SELECT judgment_source FROM grade_signals WHERE evidence_id=? ORDER BY seq DESC LIMIT 1",
+            (evidence_id,),
+        ).fetchone()
+        return r["judgment_source"] if r else None
