@@ -34,63 +34,163 @@ provenance:
   authored_from_digest: 96faf1855649cc32aea5717816f77ef23816cc130b7183cca37ab78f7179be3c
 ---
 
-# Physical and Technical Deception Craft
+# Physical And Technical Deception Craft
 
 ## Purpose
 
-Review the physical and technical construction of a plant — staged sabotage, planted documents, funding, and channel choice. A deception the enemy can physically examine must be built so it survives that examination: an explosion that leaves the clues the enemy needs to credit it, a planted man documented exhaustively enough to be believed. This skill checks the craft of making the artefact real enough to be reported yet controlled enough to do no serious harm.
+Audit whether the physical and technical construction behind a plant — a staged
+sabotage, a corpse or courier carrying planted documents, a discovery site, an
+exfiltration channel, a funding trail, or a claimed exaggeration of strength — carries
+the signatures a deliberately engineered deception must show, or instead the tells of
+an under-built one. Because a target can physically examine what has been planted,
+disciplined craft leaves survivable, corroborating evidence rather than destroying it,
+documents a fabricated personality as exhaustively as a real one, and routes its
+funding and channel choices so they do not expose the arrangement. This skill reviews
+the collected evidence chain, or a proposed friendly construction, against that craft
+standard — it is a lens for recognising the adversary's toolkit in what has been
+found, not a set of instructions for building one.
+
+## When to use
+
+- A reported explosion, fire, "accident," or act of sabotage sits in the case record,
+  and it needs testing for whether it carries the signature of a deliberate,
+  controlled plant rather than a genuine hostile or accidental event.
+- A corpse, courier, or dead-drop artefact anchors a claim, and the personality and
+  documents built around it — letters, tickets, identity papers — need checking for
+  whether they are exhaustively real enough to be believed.
+- Physical evidence reached the adversary, or reached the analyst, through a
+  discovery, and the site and the path by which it was found need testing for whether
+  they were engineered rather than merely convenient.
+- Material is crossing an exfiltration channel neither side fully controls — a
+  diplomatic bag, a neutral's routine mail — and the record needs checking for
+  whether that channel is being actively exploited or only passively tolerated.
+- A quantitative claim — an exaggerated strength figure, or a fall-of-shot / battle-
+  damage report shaping an aim correction — needs testing for whether its size and
+  direction are disciplined and plausibly aimed, or instead an overreach or an
+  unexplained asymmetry that gives it away.
+- A funding arrangement or a piece of adversary-supplied equipment sits in the
+  record, and it needs tracing for exposure risk or for signs of recycled captured
+  matériel.
+- The case's mix of communication channels looks concentrated on one technology, and
+  it needs checking against the alternatives it may have abandoned.
 
 ## Procedure
 
-1. For a staged controlled sabotage, leave surviving evidence that points to sabotage, steer local investigation and the press toward the intended explanation, and reap the domestic benefit of stimulated vigilance — too effective an explosion destroys the very clues the enemy needs to credit it (P018).
-2. For a planted personality carried by a corpse or courier, build it around exhaustively documented real papers — personal letters, tickets, identity documents — because the documents are believed only if the man is believed (P041).
-3. Choose a planting site where the enemy has good access but thorough forensic examination is difficult, and build in redundant discovery paths so the material is found even by a careless finder (P085).
-4. Handle uncontrollable channels: do not try to close an uncontrollable exfiltration channel such as the diplomatic bag — since the material will leave anyway, seed it with your own dictated content, and exploit well-placed neutrals as couriers (P037).
-5. Discipline the quantitative deceptions: exaggerate military strength only within a bound on the order of ten percent — enough to mislead but not to strain credulity — and shift an enemy's aim by selectively over-reporting overshoots and suppressing undershoots (P081, P044).
-6. Mind the plumbing: fund a controlled operation through a plausible commercial currency-exchange, preserve personal contact and secret writing as alternatives to wireless rather than over-investing in one technology, and remember the enemy recycles captured equipment — the kit he supplies may be your own side's (P082, P046, P084).
+1. Test any reported sabotage, fire, or "accident" for the staged-plant signature:
+   check whether it left surviving physical evidence that actually points to the
+   claimed cause, whether the narrative given to investigators and the press was
+   consistently steered toward that intended explanation, and whether it would
+   plausibly raise real-world vigilance as a side benefit; flag as suspect a
+   "too effective" destruction that would erase the very evidence needed to credit
+   it — whether the item under review is an incident attributed to the adversary or
+   a friendly cover-story draft awaiting approval (P018).
+2. Test any corpse-, dead-drop-, or courier-carried document trail for the
+   documented-personality signature: check whether the man behind the papers is
+   built out with real, exhaustively consistent personal letters, tickets, and
+   identity documents, because the documents are only believed if the man is — a
+   thin or generic backstory is the tell of an under-built plant (P041).
+3. Test the discovery of any physical artefact for the planting-site signature:
+   check whether the site is one the adversary could plausibly access yet a
+   thorough forensic pass would struggle to fully unpick, and whether more than one
+   plausible path led to its discovery; a single, forensics-friendly, fragile
+   discovery path is a tell that the find itself, not just its contents, may be
+   staged (P085).
+4. Test any material crossing a channel neither side fully controls — a diplomatic
+   bag, a neutral's routine mail — for whether the record shows it being actively
+   exploited, with content deliberately seeded into it, rather than merely
+   tolerated as an unstoppable leak, and check whether a well-placed neutral
+   courier's traffic has been examined for secret writing piggybacked on the
+   courier's own legitimate outgoing correspondence (P037).
+5. Test any quantitative claim feeding an adversary's targeting or order-of-battle
+   picture for calibrated bias: check a fall-of-shot or battle-damage record for an
+   unexplained directional asymmetry — over-reported overshoots against suppressed
+   undershoots, or the reverse — consistent with steering a correction, and check
+   any exaggerated strength claim against a disciplined bound on the order of ten
+   percent, enough to mislead without straining credulity, flagging both an absent
+   bias where one would be expected and an implausible overreach (P044, P081).
+6. Trace the funding and equipment plumbing behind a controlled operation: check
+   whether payments cross currencies through a plausible commercial exchange that
+   would not expose the arrangement to a hostile auditor, and check any
+   adversary-supplied equipment in the record — wireless sets, weapons, currency —
+   for whether it has been examined as possibly recycled captured matériel from
+   the reviewer's own side (P082, P084).
+7. Check the case's communication channel mix for over-concentration on one
+   technology: because the contest between interception and evasion keeps
+   shifting, flag a plan or an observed channel choice that has abandoned personal
+   contact or secret writing in favour of wireless alone, or the reverse, as
+   carrying unexamined single-technology risk (P046).
+8. Emit findings highest-impact first in the output contract below.
 
-## Principles to apply
+## Inputs
 
-Each rule below is a promoted principle of this package; cite its ID in a finding.
-
-- **P018** (high) — When staging a controlled sabotage, leave surviving evidence that points to sabotage, steer local investigation and the press toward the intended explanation, and reap the additional domestic benefit that the publicity stimulates vigilance in real installations; too effective an explosion destroys the very clues the enemy needs to credit it.
-- **P037** (high) — Do not try to close an uncontrollable exfiltration channel such as the diplomatic bag; since the material will leave anyway, seed it with your own dictated content to convert the leak into a deception channel, and exploit well-placed neutrals as couriers by piggybacking secret writing on their legitimate outgoing traffic.
-- **P041** (high) — Build a planted deception carried by a corpse or courier around an exhaustively documented personality, with real personal letters, tickets, and identity papers, because the documents are believed only if the man is believed.
-- **P044** (high) — Shift an enemy's aim by selectively over-reporting overshoots and suppressing undershoots, or the reverse, biasing his correction in the direction that moves his mean point of impact away from the vital target.
-- **P046** (medium) — Do not over-invest in a single communication technology or abandon older channels because the newest one seems dominant; the attack-defence contest keeps shifting, so preserve personal contact, secret writing, and wireless as alternatives.
-- **P081** (medium) — Exaggerate your military strength only within a disciplined bound, on the order of ten percent, enough to mislead or deter but not so much as to strain credulity.
-- **P082** (medium) — Fund a controlled operation through a plausible commercial currency-exchange, so the enemy's foreign payments are converted into your own currency without exposing the arrangement.
-- **P084** (medium) — Remember that the enemy recycles captured equipment, so the material he supplies to your agents may be your own side's captured kit.
-- **P085** (medium) — Choose a planting site where the enemy has good access but a thorough forensic examination is difficult, and build in redundant discovery paths so the material is found even by a careless finder.
-
-## Anti-patterns to flag
-
-- Staging a sabotage so effective it destroys the evidence the enemy needs to credit it.
-- Planting documents on a personality too thinly built to be believed.
-- Exaggerating strength so far beyond a disciplined bound that it strains credulity.
+- The case record or plan under review: any reported sabotage, fire, or accident,
+  with what physical evidence survived and how investigators or the press
+  explained it.
+- Any planted document, courier, or corpse-carried personality, with the letters,
+  tickets, and identity papers built around it.
+- The discovery circumstances of any physical artefact: the site, who could
+  plausibly access it, and the path or paths by which it was found.
+- Any material known to be crossing an uncontrolled exfiltration channel — a
+  diplomatic bag, a neutral courier — and what is known about its content and use.
+- Quantitative claims feeding the adversary's picture: strength figures,
+  fall-of-shot or battle-damage reports, and their apparent bias or bound.
+- The funding arrangement behind the operation and any adversary-supplied
+  equipment entered into the record.
+- The case's mix of communication channels and technologies in use or proposed.
 
 ## Output
 
-One finding per problem surfaced above, highest-risk first, each naming the tradecraft flaw and the principle it violates, the correction, the residual uncertainty (including who could still be deceiving whom), and a concrete next step. Never issue the caller's go/no-go: the corrected judgment and the residual risk are handed back to the operation's owner.
+Per finding: name the physical/technical construction flaw (an evidence-destroying
+plant, an under-documented personality, a fragile or single-path discovery, an
+unexploited or unexamined uncontrolled channel, an uncalibrated quantitative claim,
+an exposed funding or equipment trail, a single-technology channel mix), apply the
+correction (re-engineer the artefact to survive scrutiny without destroying its own
+evidence, thicken the backstop documentation, add a redundant discovery path,
+actively exploit or inspect the channel, recompute the bias or the bound, route
+funding through a plausible exchange, diversify the channel mix), state the residual
+uncertainty the correction leaves — including who could still be deceiving whom —
+and end with a concrete next step. Order findings highest-impact first. Never issue
+a bare go/no-go on the plant or the case; the corrected judgment and the residual
+risk are handed back to the operation's owner.
 
-## Review checklist
+## Anti-patterns to flag
 
-For the case under review, confirm each applicable principle holds; when one is violated, name the flaw, the correction, and the residual uncertainty.
-
-- [ ] (P018) When staging a controlled sabotage, leave surviving evidence that points to sabotage,…
-- [ ] (P037) Do not try to close an uncontrollable exfiltration channel such as the diplomatic bag;…
-- [ ] (P041) Build a planted deception carried by a corpse or courier around an exhaustively…
-- [ ] (P044) Shift an enemy's aim by selectively over-reporting overshoots and suppressing…
-- [ ] (P046) Do not over-invest in a single communication technology or abandon older channels…
-- [ ] (P081) Exaggerate your military strength only within a disciplined bound, on the order of ten…
-- [ ] (P082) Fund a controlled operation through a plausible commercial currency-exchange, so the…
-- [ ] (P084) Remember that the enemy recycles captured equipment, so the material he supplies to…
-- [ ] (P085) Choose a planting site where the enemy has good access but a thorough forensic…
+- A staged sabotage so clean or so destructive that it erases the very evidence
+  needed to credit it, or an investigation or press narrative that does not match
+  what the physical evidence actually supports (P018).
+- A planted document trail resting on a corpse or courier whose personality is
+  thin, generic, or inconsistent — documents asked to carry more belief than the
+  man behind them can support (P041).
+- A physical find whose discovery path is single, fragile, or oddly convenient,
+  with no redundant route by which it could plausibly have been found (P085).
+- An uncontrollable channel — diplomatic bag, neutral courier — left unexamined
+  and unexploited: tolerated as a leak rather than checked for seeded content or
+  secret writing riding on it (P037).
+- A fall-of-shot or battle-damage record with an unexplained directional bias
+  never checked for whether it is steering, or being steered by, an aim
+  correction (P044).
+- A strength claim stretched far beyond a disciplined bound on the order of ten
+  percent, risking either implausibility or a misjudged credulity threshold
+  (P081).
+- A funding trail or adversary-issued equipment accepted at face value, never
+  traced for exposure and never checked against the possibility of recycled
+  captured matériel (P082, P084).
+- A channel mix concentrated on a single communication technology, with older
+  alternatives — personal contact, secret writing — abandoned rather than
+  preserved as fallbacks (P046).
 
 ## References
 
-- [`../../references/deception-detection-principles-index.md`](../../references/deception-detection-principles-index.md) — the package-wide index of every promoted principle, with its full statement, confidence, and grounding. Read it rather than paraphrasing from memory.
+See `../../references/deception-detection-principles-index.md` for the full
+principle catalogue. For adjacent concerns, see the sibling skills:
+`building-and-feeding-the-deception` covers the credibility of the message content
+once the physical vehicle is sound; `network-security-and-compartmentation` covers
+how the agent or channel carrying this artefact is isolated from the rest of the
+network; `counter-deception-and-the-mirror` covers whether this same physical and
+technical craft is being turned back on the reviewer's own side.
 
 ## Provenance
 
-This skill's checks derive from P018, P037, P041, P044, P046, P081, P082, P084, P085, grounded in J. C. Masterman's *The Double-Cross System*; the frontmatter `provenance` block lists the exact principle and claim ids, which resolve into `principles/principles.yaml` and `analysis/claims.jsonl`.
+Derived solely from P018, P037, P041, P044, P046, P081, P082, P084, and P085 (J. C.
+Masterman, The Double-Cross System; distillation-only; see the frontmatter above
+for the full principle and claim id list).

@@ -20,7 +20,7 @@ Source profile: subagents/deception-detection-reviewer/profile.yaml
 Deployed copy — do not edit. Re-export from the factory: cli export-deployable deception-detection-reviewer --dest <this repo root>
 Generator version: 0.1.0
 Profile version: 1.0.0
-Generated: 2026-07-10T22:37:48.027824+00:00
+Generated: 2026-07-10T22:54:45.367053+00:00
 -->
 
 ## Role

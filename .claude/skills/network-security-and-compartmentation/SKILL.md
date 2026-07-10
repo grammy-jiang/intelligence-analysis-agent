@@ -34,63 +34,160 @@ provenance:
   authored_from_digest: 5ab7080b3c9252d2378a82b0ee4585345d87da8a1990285c3e2396fbf15f2a3c
 ---
 
-# Network Security and Compartmentation
+# Network Security And Compartmentation
 
 ## Purpose
 
-Review the structure of a controlled network for the security that keeps one blown agent from collapsing the rest. Deception is built on many agents, and its greatest vulnerability is linkage: agents who can deduce each other, a coup resting on one channel, or a secret so widely shared it must eventually leak. This skill checks independence, firewalling, and the disciplined restriction of the decisive material to the safest channels.
+Review the structural security of the network of agents, sources, or reporting channels
+behind a deception case or an intelligence assessment — not the credibility of any
+single channel, but the shape of the whole: how linked its parts are, how much decisive
+weight rests on one point, and how fast a shared secret would leak as the compartment
+grows. A controlled network and an analyst's own source base are built the same way, so
+this skill carries the mirror question into network shape: several "independent"
+reporting streams could themselves be one adversary-run channel dressed up as
+corroboration, and an analyst's own collection could be exposed to feedback that lets
+the target learn what is being asked and shape the answer accordingly. This skill
+audits exposure, linkage, and control-claims — the credibility of any one piece of fed
+material belongs to the sibling skills.
+
+## When to use
+
+- A deception plan or double-agent network is being structured or reviewed, and its
+  compartmentation, independence, and linkage need checking before it is committed.
+- An assessment or case stakes a decisive, load-bearing conclusion — or its riskiest
+  deceptive material — on a single source or channel, and whether that concentration is
+  safe needs checking.
+- Several reporting streams are being read as independent corroboration, and whether
+  they might share an undisclosed link, handler, or origin needs checking.
+- A claim asserts that an entire network is understood, controlled, or independent, and
+  whether that claim rests on accumulated cross-referenced evidence or on assumption
+  needs checking.
+- A source or channel must be dropped, silenced, or retired from the record, and
+  whether the resulting gap is covered by a plausible, corroborated explanation needs
+  checking.
+- A compromised or doubtful link threatens to collapse confidence in the rest of the
+  network, and whether it should be firewalled or cut now — rather than carried forward
+  — needs checking.
 
 ## Procedure
 
-1. Check every agent is kept clear and independent of the others so that one blown agent does not bring down the rest and a single agent can be risked alone; allow a linkage only when unavoidable, remembering that parallel agents tend to deduce each other's status over time (P010).
-2. Confirm the decisive deception restricts definite material to the most-trusted channels while lesser agents run for corroboration and confusion — because even the most trusted channel can collapse unexpectedly and no operation should rest on one (P005).
-3. Compartment the crown jewels: the best secret-source intelligence is withheld from any agent who may re-enter enemy hands, since a returned agent may be coerced into betraying the association or take unforeseeable initiatives (P007).
-4. Confirm control of an entire network is asserted only gradually, from secret sources and cross-references between agents, not assumed (P015).
-5. Manage cross-agent knowledge: control what each of your men is allowed to believe about the others — two controlled agents unaware of each other's true allegiance can misread one another and escalate enough to blow both — and retire a notional subagent positioned to observe what you must not report (P054, P024).
-6. When a linked asset could collapse a deception midway, consider terminating the compromised case at once, even withholding the best channel from the operation, run the riskiest deceptions through the most expendable least-linked agents, and remember a secret shared among many will inevitably leak (P063, P069, P062).
+1. Establish the object under review: the network's agents, sources, or channels; the
+   links — shared handlers, routing, or origin — reported between them; and the single
+   decisive conclusion or piece of material, if any, the case leans on. Fix this before
+   judging whether any concentration or linkage found below is a genuine problem.
+2. Check the network's parts are structurally independent rather than tied through an
+   avoidable shared point — a shared handler, route, or origin lets one part's collapse
+   or compromise take others down with it, and parts run in parallel long enough tend to
+   reveal each other's true status regardless of design. Flag any avoidable linkage, and
+   flag corroboration drawn from streams that share an undisclosed common root — the
+   network's own version of a single controlled hand dressed up as several independent
+   voices (P010).
+3. Check that a claim the network is fully controlled, independently corroborating, or
+   well understood is built from accumulating, cross-referenced evidence — one part's
+   routing or reporting matching another's, or one part naming another as reliable —
+   rather than simply asserted. Flag premature certainty about the network's shape,
+   whether that is the plan's own claim about its agents or the assessment's own claim
+   that its sources are independent (P015).
+4. When a decisive conclusion, or the riskiest deceptive material, rests on a single
+   "most trusted" channel, check that a lesser channel exists for corroboration or as a
+   hedge — even the most trusted channel can fail without warning, and no judgment or
+   operation should rest on one. Flag any decisive call staked on an unbacked single
+   source (P005).
+5. Check that the decisive fact or crown-jewel material has not been exposed to a
+   channel whose loyalty or control cannot be fully guaranteed — particularly one
+   already in renewed contact with the opposing side or an outside audience — since such
+   a channel may be pressured, may act unpredictably, and can carry the sensitive fact
+   back out. Flag any crown-jewel exposure to an uncertain-loyalty channel (P007).
+6. Check whether the channels feeding this case are aware of one another's true
+   status, role, or conclusions in a way that could let them misjudge each other,
+   cross-contaminate, or converge in a way that only looks like independent agreement.
+   Separately, when a channel must be written out of the record, check the gap is
+   covered by a plausible, corroborated explanation rather than left unexplained, and
+   that the wider structure routes tasking through one accountable point rather than
+   many independently steerable ends (P054, P024).
+7. Weigh the network's exposure as a function of its size: check whether the case has
+   considered that a secret or compartment shared with a growing number of people leaks
+   with near-certainty over time, that discovery of the compartment's true scale would
+   cast suspicion on every item inside it, and that a link already in doubt should be
+   firewalled or cut now rather than carried forward on hope (P062, P063).
+8. Check that the riskiest material or highest-exposure tasking sits with the
+   network's most isolated, least-connected, most-expendable parts, and flag the
+   reverse — a valuable or well-connected channel carrying the network's riskiest
+   exposure (P069).
+9. Emit findings highest-impact first, in the review's standard name-the-flaw /
+   correction / residual-uncertainty / next-step format.
 
-## Principles to apply
+## Inputs
 
-Each rule below is a promoted principle of this package; cite its ID in a finding.
-
-- **P005** (high) — For the decisive deception, restrict definite deception material to your most-trusted channels while keeping lesser agents running for corroboration and confusion, because even the most trusted channel can collapse unexpectedly and no operation should rest on one.
-- **P007** (high) — Compartmentalise your best secret-source intelligence from any agent who will re-enter enemy hands, because a returned agent may be coerced or persuaded into betraying your association and may take unforeseeable initiatives whose loyalty you can never be certain of.
-- **P010** (high) — Keep every agent clear and independent of the others, so that one blown agent does not bring down the rest and a single agent can be risked alone; allow a linkage only when it cannot be avoided, and remember that agents run in parallel tend to deduce each other's status over time.
-- **P015** (high) — Confirm that you control an entire enemy network only gradually, by accumulating evidence from secret sources and cross-references between agents, such as the enemy routing payments or emergency lifelines through your controlled men or one agent naming another as his best.
-- **P024** (high) — Retire a notional subagent positioned to observe something you must not report by giving him a plausible illness or death backed by real corroboration such as a planted obituary, and structure a notional network so subagents report outward but all receive their tasking through the controlled head.
-- **P054** (high) — Manage what each of your controlled men is allowed to believe about the other, because two controlled agents unaware of each other's true allegiance can misread one another and escalate dangerously enough to blow both.
-- **P062** (high) — Recognise that a secret shared among many people will inevitably leak given enough time; the growth of an operation multiplies its exposure, and if the enemy learns the scale of your double-cross system he will suspect every agent.
-- **P063** (high) — When a linked asset could collapse a deception midway, consider terminating the compromised case at once and even withholding your best channel from the operation, to firewall the rest of the network.
-- **P069** (high) — Use your most isolated, least-connected, and most-expendable agents for the riskiest deceptions, because their collapse will not bring down the network; keep valuable and linked agents away from high-risk lies.
-
-## Anti-patterns to flag
-
-- Resting a decisive coup on a single channel with no independent corroboration.
-- Feeding the best secret intelligence to an agent who may re-enter enemy hands.
-- Linking agents so that blowing one exposes the network, or assuming full control before secret sources confirm it.
+- The network, case, or evidence chain under review — its agents, sources, or
+  reporting channels, and any links, shared handlers, or common origins reported
+  between them.
+- The decisive conclusion or crown-jewel material the case rests on, and which
+  channel(s) it is attributed to.
+- Any claim that the network is fully controlled, independent, or well understood, and
+  the cross-referenced evidence offered to support it.
+- The history of who has known the secret or compartment, how that number has grown,
+  and whether any channel has already been silenced, dropped, or shows signs of
+  compromise.
+- The relative value, connectedness, and expendability of each channel, and which risk
+  or tasking each currently carries.
+- For the mirror read: whether the material under review could itself be corroboration
+  manufactured by a single controlled or compromised network rather than genuinely
+  independent sources.
 
 ## Output
 
-One finding per problem surfaced above, highest-risk first, each naming the tradecraft flaw and the principle it violates, the correction, the residual uncertainty (including who could still be deceiving whom), and a concrete next step. Never issue the caller's go/no-go: the corrected judgment and the residual risk are handed back to the operation's owner.
+Per finding: name the network-security flaw (harmful linkage between reported-
+independent parts, premature certainty about a network's control or independence, a
+decisive conclusion staked on one channel, crown-jewel material exposed to an
+uncertain-loyalty channel, unmanaged cross-channel awareness, an unexplained gap where a
+channel was silenced, an unweighed leak-risk as the compartment grows, or risk
+misallocated onto a valuable or well-connected channel), apply the correction (separate
+or firewall the linked parts, require cross-referenced evidence before crediting a
+control or independence claim, back the decisive channel with a corroborating one,
+compartment the crown-jewel material, manage what channels know of each other and of
+the case, retire a channel behind a plausible corroborated cover story, cut the
+compromised link now, or reroute risk onto isolated and expendable channels), state the
+residual uncertainty the correction leaves — including whether the reviewed network
+could itself be adversary-controlled — and end with a concrete next step. Order
+findings highest-impact first. Never close a review with a bare go/no-go in place of
+this structure.
 
-## Review checklist
+## Anti-patterns to flag
 
-For the case under review, confirm each applicable principle holds; when one is violated, name the flaw, the correction, and the residual uncertainty.
-
-- [ ] (P005) For the decisive deception, restrict definite deception material to your most-trusted…
-- [ ] (P007) Compartmentalise your best secret-source intelligence from any agent who will re-enter…
-- [ ] (P010) Keep every agent clear and independent of the others, so that one blown agent does not…
-- [ ] (P015) Confirm that you control an entire enemy network only gradually, by accumulating…
-- [ ] (P024) Retire a notional subagent positioned to observe something you must not report by…
-- [ ] (P054) Manage what each of your controlled men is allowed to believe about the other, because…
-- [ ] (P062) Recognise that a secret shared among many people will inevitably leak given enough…
-- [ ] (P063) When a linked asset could collapse a deception midway, consider terminating the…
-- [ ] (P069) Use your most isolated, least-connected, and most-expendable agents for the riskiest…
+- Crediting several reporting streams as independent corroboration when they share an
+  undisclosed handler, route, or origin (P010).
+- Asserting a network is fully controlled, independent, or understood without the
+  accumulating cross-referenced evidence to back it (P015).
+- Staking a decisive conclusion, or the riskiest deceptive material, on a single "most
+  trusted" channel with no back-up for corroboration (P005).
+- Exposing crown-jewel material to a channel whose loyalty or control cannot be fully
+  guaranteed, especially one in renewed contact with the opposing side (P007).
+- Letting channels within a case become aware of each other's true status or
+  conclusions, risking mutual misjudgment or manufactured-looking convergence (P054).
+- Leaving a silenced or dropped channel as an unexplained gap instead of a plausible
+  corroborated cover story, or letting a network's sub-channels be steered
+  independently instead of through one accountable point (P024).
+- Ignoring that a compartment shared with a growing number of people leaks with
+  near-certainty, that its exposed scale would taint every item inside it, or carrying
+  forward a link already in doubt instead of firewalling it now (P062, P063).
+- Routing the network's riskiest exposure through its most valuable or best-connected
+  channel instead of its most isolated and expendable one (P069).
 
 ## References
 
-- [`../../references/deception-detection-principles-index.md`](../../references/deception-detection-principles-index.md) — the package-wide index of every promoted principle, with its full statement, confidence, and grounding. Read it rather than paraphrasing from memory.
+See `../../references/deception-detection-principles-index.md` for the full principle
+catalogue. For adjacent concerns, see the sibling skills:
+`turning-and-running-a-controlled-agent` covers the day-to-day handling of one channel
+once it sits inside the network shape checked here; `assessing-enemy-trust-and-belief`
+reads how far the adversary actually believes in a channel this skill has checked for
+structural exposure; `counter-deception-and-the-mirror` carries the broader mirror
+discipline that this skill applies specifically to network shape — whether the
+reviewed source network could itself be adversary-controlled.
 
 ## Provenance
 
-This skill's checks derive from P005, P007, P010, P015, P024, P054, P062, P063, P069, grounded in J. C. Masterman's *The Double-Cross System*; the frontmatter `provenance` block lists the exact principle and claim ids, which resolve into `principles/principles.yaml` and `analysis/claims.jsonl`.
+Derived solely from P005, P007, P010, P015, P024, P054, P062, P063, and P069 (J. C.
+Masterman, *The Double-Cross System*; distillation-only). The frontmatter provenance
+block above lists the exact principle and claim ids, which resolve into
+`principles/principles.yaml` and `analysis/claims.jsonl`.
