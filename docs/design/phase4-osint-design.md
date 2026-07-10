@@ -44,10 +44,12 @@ def search(query: str, connector: Connector, max_results: int = 20) -> SearchRes
 
 @mcp.tool
 def fetch(url: str) -> FetchedArtifact:
-    """Fetch a URL through the shared egress guard (control #3). `url` must ORIGINATE from a prior in-session
-    `search`/`reverse_image_search` result; a freeform `url` requires explicit analyst confirmation (control
-    #7a). Stores raw bytes + a content hash; returns metadata + a server-issued opaque `artifact_ref`. No
-    interpretation; the pre-egress gate (control #7) screens the URL before it leaves."""
+    """Fetch a URL through the shared egress guard (control #3). `url` must EXACTLY MATCH (byte-for-byte,
+    against a server-held per-session set) a URL returned by a prior in-session `search`/`reverse_image_search`
+    call; a near-miss (same host, different path/query/trailing slash) counts as freeform and requires explicit
+    analyst confirmation (control #7a). Stores raw bytes + a content hash; returns metadata + a server-issued
+    opaque `artifact_ref`. No interpretation; the pre-egress gate (control #7) screens the URL before it leaves.
+    Redirect hops are re-checked against the SSRF rules (scheme+IP), not against the provenance set."""
 
 @mcp.tool
 def extract_exif(artifact_ref: str) -> ExifData:
@@ -130,9 +132,11 @@ Read-back (`get_artifact`, `list_artifacts`) + `verify_chain` per the Phase-3 co
    that could carry an embedded key is **redacted before logging/returning/surfacing**; keys are per-connector,
    narrowly scoped, and independently revocable, with a rotation trigger on suspected compromise.
 10. **Egress audit log (D).** Every egress-capable call emits a structured, **append-only hash-chained** record
-   (args *minus secrets*, the resolved IP after the SSRF check, connector, size/timing, outcome) with its own
-   `verify_chain` — so "sole egress, allowlisted" is verifiable after the fact and a bypass leaves a trace. A
-   breaker trip (control #8) is logged here too, fail-closed.
+   containing a per-tool **allowlist** of loggable fields (fail-closed — a field not on the list is never
+   logged, so a future secret-bearing field can't leak by omission), the resolved IP after the SSRF check, the
+   connector, size/timing, and outcome, with its own `verify_chain` — so "sole egress, allowlisted" is
+   verifiable after the fact and a bypass leaves a trace. A breaker trip (control #8) is logged here too,
+   fail-closed.
 11. **`extract_exif` parser hardening (E).** It parses adversary-supplied bytes on the sole egress host: use a
    **memory-safe / pure-library** reader (not a shell-out to a CLI); **disable XML external entities** for any
    XMP/XML; verify the artifact's real **magic bytes** (never trust the remote `Content-Type`); run the parse
