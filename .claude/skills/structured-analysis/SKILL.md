@@ -121,8 +121,10 @@ Give the leading hypothesis and the residual probability on the alternatives —
 leave a one-in-four. Note confidence (how much evidence, how diagnostic) separately from the probability,
 and record any dissent. **Use the `calibrated-forecasting` skill** to produce the number — outside view /
 base rate first, Fermi-decompose, adjust moderately, probability as a number with confidence stated
-separately, and an update plan. *(MVP: no calibration tracker to read your own past accuracy — reason the
-number and mark it as an un-scored forecast.)*
+separately, and an update plan. *(Phase 3: after the human gate approves it, commit the number to the
+`calibration-tracker` MCP via `log_forecast` with `judgment_source="analyst_confirmed"` — it locks the
+question + probability so it can be Brier-scored when the outcome resolves. The evidence-ledger and ach-engine
+MCPs are not built yet — Steps 3–6 stay in-context for now.)*
 → writes `Judgment`.
 
 ### Step 10 — Report, then the HUMAN APPROVAL gate *(Heuer ACH Step 7; Kent C012, C020, C167)*
