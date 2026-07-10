@@ -71,8 +71,10 @@ never listed can never win. Mark each `candidate / unproven / disproved`; start 
 Gather relevant evidence and, per item, record it as an **EvidenceItem** that goes beyond concrete reporting
 to include: (1) your own assumptions and deductions; (2) for each hypothesis, "if it were true, what should
 I see — or NOT see?"; and (3) the **absence of expected evidence** — the dog that did not bark. Grade each
-item for source **reliability A–F** and information **credibility 1–6**, as a stated judgment. *(MVP: no
-source-trust registry to read a source's history — grade from what is known now and say so.)*
+item for source **reliability A–F** and information **credibility 1–6**, as a stated judgment.
+**Use the `source-evaluation` skill** to grade each item — it supplies the two-axis grade, the diagnosticity
+read (which hypotheses the item does and does not discriminate), corroboration status, and a deception check.
+*(MVP: no source-trust registry to read a source's history — grade from what is known now and say so.)*
 → writes `Evidence`.
 
 ### Step 4 — Build the ACH matrix *(Heuer C234; ACH Step 3)*
@@ -117,8 +119,10 @@ plumbing; at MVP the analyst is the escalation target.)*
 State the judgment as an explicit **probability number** (or a numeric range), not "likely/probable" alone.
 Give the leading hypothesis and the residual probability on the alternatives — three-to-one odds still
 leave a one-in-four. Note confidence (how much evidence, how diagnostic) separately from the probability,
-and record any dissent. *(MVP: no calibration tracker to read your own past accuracy — reason the number
-and mark it as an un-scored forecast.)*
+and record any dissent. **Use the `calibrated-forecasting` skill** to produce the number — outside view /
+base rate first, Fermi-decompose, adjust moderately, probability as a number with confidence stated
+separately, and an update plan. *(MVP: no calibration tracker to read your own past accuracy — reason the
+number and mark it as an un-scored forecast.)*
 → writes `Judgment`.
 
 ### Step 10 — Report, then the HUMAN APPROVAL gate *(Heuer ACH Step 7; Kent C012, C020, C167)*
