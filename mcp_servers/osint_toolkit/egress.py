@@ -8,10 +8,12 @@ re-resolving by hostname (anti-rebinding).
 
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import socket
+import ssl
 from collections.abc import Callable
-from urllib.parse import urlsplit
+from urllib.parse import urljoin, urlsplit
 
 Resolver = Callable[[str], list[str]]
 
@@ -63,6 +65,12 @@ def _default_resolver(host: str) -> list[str]:
         return []
 
 
+MAX_FETCH_BYTES = 25 * 1024 * 1024
+_REDIRECT_CODES = {301, 302, 303, 307, 308}
+# opener(host, pinned_ip, url) -> (status:int, headers:dict[str,str], body:bytes). Injectable for tests.
+Opener = "Callable[[str, str, str], tuple[int, dict, bytes]]"
+
+
 def validate_url(
     url: str, allowed_hosts: set[str] | None = None, resolver: Resolver = _default_resolver
 ) -> tuple[str, str]:
@@ -97,3 +105,47 @@ def validate_url(
         pinned = pinned or ip_str
     assert pinned is not None
     return host, pinned
+
+
+def _resolve_redirect(base: str, location: str) -> str:
+    return urljoin(base, location)
+
+
+def _pinned_https_get(host: str, ip: str, url: str) -> tuple[int, dict, bytes]:
+    """Real fetch: connect to the validated pinned IP, TLS with SNI=host (cert validated against host), GET —
+    never re-resolving the hostname (anti-rebinding). Used only behind OSINT_LIVE against a real host."""
+    parts = urlsplit(url)
+    path = parts.path or "/"
+    if parts.query:
+        path += "?" + parts.query
+    ctx = ssl.create_default_context()
+    raw_sock = socket.create_connection((ip, 443), timeout=15)
+    tls = ctx.wrap_socket(raw_sock, server_hostname=host)
+    try:
+        conn = http.client.HTTPSConnection(host, timeout=15)
+        conn.sock = tls  # reuse the pre-connected, pinned, cert-validated socket (no re-resolve)
+        conn.request("GET", path, headers={"Host": host, "Connection": "close", "User-Agent": "osint-toolkit"})
+        resp = conn.getresponse()
+        body = resp.read(MAX_FETCH_BYTES + 1)
+        return resp.status, {k.lower(): v for k, v in resp.getheaders()}, body
+    finally:
+        tls.close()
+
+
+def fetch_pinned(url, *, max_bytes=MAX_FETCH_BYTES, max_redirects=5, opener=None, resolver=_default_resolver):
+    """Fetch through the guard, re-validating scheme + IP on EVERY redirect hop (control #3). Returns
+    (final_url, body, content_type). `opener(host, ip, url)` is injectable for tests; default = pinned-TLS GET."""
+    opener = opener or _pinned_https_get
+    cur, hops = url, 0
+    while True:
+        host, ip = validate_url(cur, resolver=resolver)  # per-hop re-validation (scheme + IP-block)
+        status, headers, body = opener(host, ip, cur)
+        if status in _REDIRECT_CODES and headers.get("location"):
+            hops += 1
+            if hops > max_redirects:
+                raise EgressError("too many redirects")
+            cur = _resolve_redirect(cur, headers["location"])
+            continue
+        if len(body) > max_bytes:
+            raise EgressError("response exceeds size cap")
+        return cur, body, headers.get("content-type")
