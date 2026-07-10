@@ -127,12 +127,19 @@ def verify_chain(case_id: str | None = None) -> ChainStatus:
     return store.verify_chain(case_id)
 
 
+@mcp.tool
+def verify_signals_chain() -> ChainStatus:
+    """Verify the shared cross-server signal store (stale_events + grade_signals) that ach-engine's
+    collect-then-grade gate depends on."""
+    return staleness.verify_chain()
+
+
 def main() -> None:
-    status = store.verify_chain()
-    if not status.ok:
-        print(f"[evidence-ledger] REFUSING TO SERVE — chain verify failed: {status.mismatch}", file=sys.stderr)
-        raise SystemExit(1)
-    print(f"[evidence-ledger] chain OK ({status.rows_verified} rows); serving on stdio", file=sys.stderr)
+    for label, st in (("evidence-ledger", store.verify_chain()), ("evidence-signals", staleness.verify_chain())):
+        if not st.ok:
+            print(f"[evidence-ledger] REFUSING TO SERVE — {label} chain failed: {st.mismatch}", file=sys.stderr)
+            raise SystemExit(1)
+    print("[evidence-ledger] chains OK; serving on stdio", file=sys.stderr)
     mcp.run()
 
 

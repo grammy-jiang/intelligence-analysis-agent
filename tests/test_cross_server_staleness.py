@@ -3,6 +3,8 @@ score_matrix refuses until they are re-rated. Uses one shared, deterministic clo
 
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from mcp_servers.ach_engine.store import ACHError, ACHStore
@@ -69,4 +71,22 @@ def test_score_refuses_ungraded_evidence(tmp_path):
             ach.score_matrix(ref.matrix_id)
     finally:
         ach.close()
+        st.close()
+
+
+def test_signals_chain_detects_tamper(tmp_path):
+    """grade_signals is the authority score_matrix trusts for collect-then-grade — its chain must be
+    integrity-verifiable, or a forged 'analyst_confirmed' defeats finding B silently."""
+    st = StalenessStore(str(tmp_path / "stale.db"))
+    try:
+        st.mark_graded("E1", "analyst_confirmed")
+        st.mark_stale("E1", "grade")
+        assert st.verify_chain().ok is True
+        raw = sqlite3.connect(str(tmp_path / "stale.db"))
+        raw.execute("UPDATE grade_signals SET judgment_source='model_draft' WHERE evidence_id='E1'")
+        raw.commit()
+        raw.close()
+        s = st.verify_chain()
+        assert s.ok is False and s.mismatch.table == "grade_signals"
+    finally:
         st.close()

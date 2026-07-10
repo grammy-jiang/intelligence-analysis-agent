@@ -16,7 +16,7 @@ import sqlite3
 import time
 from collections.abc import Callable
 
-from .common import GENESIS, now_iso, row_hash
+from .common import GENESIS, ChainMismatch, ChainStatus, now_iso, row_hash
 
 _TABLES = ("stale_events", "grade_signals")
 
@@ -101,3 +101,35 @@ class StalenessStore:
             (evidence_id,),
         ).fetchone()
         return r["judgment_source"] if r else None
+
+    # ---- integrity ---------------------------------------------------------
+    def _payload_for(self, table: str, r) -> dict:
+        if table == "stale_events":
+            return {"evidence_id": r["evidence_id"], "changed_field": r["changed_field"], "marked_at": r["marked_at"]}
+        return {"evidence_id": r["evidence_id"], "judgment_source": r["judgment_source"], "marked_at": r["marked_at"]}
+
+    def verify_chain(self) -> ChainStatus:
+        """Verify BOTH signal chains. score_matrix trusts grade_signals for collect-then-grade, so this must be
+        checked at startup by every server that opens this file (evidence-ledger AND ach-engine)."""
+        heads: dict[str, str] = {}
+        verified = 0
+        for table in _TABLES:
+            prev = GENESIS
+            rows = self._conn.execute(
+                f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
+            ).fetchall()
+            for r in rows:
+                expected = row_hash(prev, self._payload_for(table, r))
+                if expected != r["row_hash"] or r["prev_hash"] != prev:
+                    return ChainStatus(
+                        server="evidence-signals", scope="all", ok=False, head_hash=heads, rows_verified=verified,
+                        mismatch=ChainMismatch(
+                            table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
+                        ),
+                    )
+                prev = r["row_hash"]
+                verified += 1
+            heads[table] = prev
+        return ChainStatus(
+            server="evidence-signals", scope="all", ok=True, head_hash=heads, rows_verified=verified
+        )
