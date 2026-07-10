@@ -96,11 +96,11 @@ def verify_chain(case_id: str | None = None) -> ChainStatus:
 
 
 def main() -> None:
-    status = store.verify_chain()
-    if not status.ok:
-        print(f"[ach-engine] REFUSING TO SERVE — chain verify failed: {status.mismatch}", file=sys.stderr)
-        raise SystemExit(1)
-    print(f"[ach-engine] chain OK ({status.rows_verified} rows); serving on stdio", file=sys.stderr)
+    for label, st in (("ach-engine", store.verify_chain()), ("evidence-signals", staleness.verify_chain())):
+        if not st.ok:
+            print(f"[ach-engine] REFUSING TO SERVE — {label} chain failed: {st.mismatch}", file=sys.stderr)
+            raise SystemExit(1)
+    print("[ach-engine] chains OK; serving on stdio", file=sys.stderr)
     mcp.run()
 
 
