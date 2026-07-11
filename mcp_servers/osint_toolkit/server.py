@@ -97,6 +97,18 @@ def _screen(text: str) -> None:
             raise ToolError("pre-egress gate: outgoing text carries a case/source identifier; blocked")
 
 
+def _screen_or_audit(tool: str, text: str, fields: dict) -> None:
+    """MF1: run the pre-egress exfil screen, but if it BLOCKS, record an audit row BEFORE re-raising. A blocked
+    exfiltration attempt is the single event most worth logging, yet `_screen` raising before the first
+    `audit.record` left it with no trace — breaking control #10 (every egress attempt is audited) on exactly the
+    path that matters most. The screen text (query/url) is never logged — only the allowlisted fields."""
+    try:
+        _screen(text)
+    except ToolError:
+        audit.record(tool, fields, "-", "blocked (screen)")
+        raise
+
+
 @mcp.tool
 def search(
     query: Annotated[str, Field(max_length=_MAX_QUERY)],
@@ -106,7 +118,7 @@ def search(
     """ONE search tool with an allowlisted `connector`. Returns CANDIDATE results (source_channel='ingested',
     inert data). The pre-egress gate screens `query` before egress. NOTE: no live connector is configured in
     this deployment — the call runs the guard/gate/audit then fails closed with a ToolError (review S19)."""
-    _screen(query)
+    _screen_or_audit("search", query, {"connector": connector, "max_results": max_results})
     audit.record("search", {"connector": connector, "max_results": max_results}, "-", "attempt")
     if not OSINT_LIVE:
         raise ToolError("live connector disabled (set OSINT_LIVE=1 + configure keys). Guard/gate/audit ran.")
@@ -131,7 +143,7 @@ def fetch(
     so today `confirmed=True` is required for every first fetch — it is not populated by any prior search."""
     if url not in _session_urls and not confirmed:
         raise ToolError("url did not originate from a prior in-session search result; pass confirmed=True")
-    _screen(url)
+    _screen_or_audit("fetch", url, {"host": "?"})  # MF1: a blocked exfil URL still leaves an audit row
     try:
         host, ip = validate_url(url)  # fetch = SSRF blocklist (no per-connector allowlist)
     except EgressError as e:
@@ -304,11 +316,17 @@ async def propose_to_ledger(
         # bypasses the mask_error_details invariant. Log the detail to stderr; return a fixed reason code.
         print(f"[osint-toolkit] evidence-ledger proposal transport error: {e!r}", file=sys.stderr)
         raise ToolError("evidence-ledger proposal failed (transport error; details in the server log only)") from e
-    # S2: the ledger response may lack structured content on schema drift / partial success — deref would raise
-    # AttributeError (masked to an opaque error). Fail with a clear reason instead.
-    if res.data is None:
+    # S2/MF2: the ledger response may lack structured content, or `res.data` may be a plain dict (when this
+    # client holds no pydantic model for the callee's output schema) or a shape-drifted object. A bare
+    # `res.data.evidence_id` deref would raise AttributeError, masked to an opaque error that makes every
+    # ledger write look broken. Normalize dict-or-model and fail with a clear ToolError if the id is absent.
+    data = res.data
+    if data is None:
         raise ToolError("evidence-ledger returned an unexpected response shape (no structured content)")
-    return ProposalRef(evidence_id=res.data.evidence_id, case_id=case_id)
+    evidence_id = data.get("evidence_id") if isinstance(data, dict) else getattr(data, "evidence_id", None)
+    if not evidence_id:
+        raise ToolError("evidence-ledger returned an unexpected response shape (missing evidence_id)")
+    return ProposalRef(evidence_id=evidence_id, case_id=case_id)
 
 
 @mcp.tool

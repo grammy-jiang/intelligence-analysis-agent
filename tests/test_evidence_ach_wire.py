@@ -56,9 +56,50 @@ async def _ach() -> None:
         assert len(r.data.hypotheses) == 2
 
 
+async def _ach_hypothesis_length_cap() -> None:
+    async with Client(ach_mcp) as c:
+        # M2: each hypothesis STRING is capped at _MAX_TEXT (not only the list length) — an oversized
+        # hypothesis is rejected at the tool schema before it can persist into the append-only store.
+        try:
+            await c.call_tool("create_matrix", {"case_id": "c", "hypotheses": ["ok", "x" * 10_001]})
+            raise AssertionError("expected ToolError for an oversized hypothesis")
+        except ToolError:
+            pass
+        # min_length=1: an empty hypothesis list is rejected at the schema too.
+        try:
+            await c.call_tool("create_matrix", {"case_id": "c", "hypotheses": []})
+            raise AssertionError("expected ToolError for an empty hypothesis list")
+        except ToolError:
+            pass
+
+
+async def _ev_read_path_id_cap() -> None:
+    async with Client(ev_mcp) as c:
+        # SF1: read-path IDs carry the same _MAX_ID (512) cap as the write tools — an oversized id is
+        # rejected at the schema, never reaching SQLite.
+        for tool, args in (
+            ("get_evidence", {"evidence_id": "x" * 600}),
+            ("list_evidence", {"case_id": "x" * 600}),
+            ("get_source_history", {"source_id": "x" * 600}),
+        ):
+            try:
+                await c.call_tool(tool, args)
+                raise AssertionError(f"expected ToolError from {tool} on an oversized id")
+            except ToolError:
+                pass
+
+
 def test_evidence_wire():
     asyncio.run(_ev())
 
 
 def test_ach_wire():
     asyncio.run(_ach())
+
+
+def test_ach_hypothesis_length_cap():
+    asyncio.run(_ach_hypothesis_length_cap())
+
+
+def test_evidence_read_path_id_cap():
+    asyncio.run(_ev_read_path_id_cap())

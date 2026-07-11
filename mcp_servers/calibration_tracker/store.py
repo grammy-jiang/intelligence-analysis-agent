@@ -91,7 +91,8 @@ class CalibrationStore:
             raise ForecastError(f"could not enable WAL journal mode (got {mode!r}); refusing to run.")
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
-        self._manifest_head = self._read_manifest_head()
+        # M2: the manifest tail hash + the last attested per-table row count (the truncation anchor).
+        self._manifest_head, self._manifest_counts = self._read_manifest_state()
 
     def _acquire_process_lock(self, db_path: str) -> None:
         lock_path = db_path + ".lock"
@@ -145,19 +146,25 @@ class CalibrationStore:
         ).fetchone()
         return row["row_hash"] if row else GENESIS
 
-    def _read_manifest_head(self) -> str:
-        """Last manifest_hash on disk (GENESIS if no manifest yet) — the tail of the self-chain."""
+    def _read_manifest_state(self) -> tuple[str, dict[str, int]]:
+        """Last manifest_hash (tail of the self-chain) + the last attested per-table row count on disk.
+        GENESIS + {} if no manifest yet. M2: the counts feed verify_chain's tail-truncation anchor."""
+        counts: dict[str, int] = {}
         if not self.manifest_path or not os.path.exists(self.manifest_path):
-            return GENESIS
+            return GENESIS, counts
         last = GENESIS
         with open(self.manifest_path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
-                if line:
-                    last = json.loads(line).get("manifest_hash", GENESIS)
-        return last
+                if not line:
+                    continue
+                e = json.loads(line)
+                last = e.get("manifest_hash", GENESIS)
+                if "count" in e:
+                    counts[e["table"]] = e["count"]
+        return last, counts
 
-    def _append_manifest(self, table: str, head: str) -> None:
+    def _append_manifest(self, table: str, head: str, count: int | None = None) -> None:
         # Self-chained + fsync'd external attestation of each per-table head. Each line binds to the
         # previous manifest line's hash, so a mid-file line cannot be edited or dropped undetected;
         # a whole-file/whole-table deletion is caught by _check_manifest's fail-closed presence check.
@@ -167,7 +174,12 @@ class CalibrationStore:
         if not self.manifest_path:
             return
         at = _now_iso()
-        payload = {"table": table, "head": head, "at": at}
+        # M2: attest a monotonic per-table row count alongside the head. Normal per-row appends increment it;
+        # seed_manifest_baseline passes the true current count. `count` is inside the hashed payload, so it is
+        # covered by the manifest self-chain and cannot be edited without breaking it.
+        if count is None:
+            count = self._manifest_counts.get(table, 0) + 1
+        payload = {"table": table, "head": head, "at": at, "count": count}
         mh = _row_hash(self._manifest_head, payload)
         entry = {**payload, "prev_manifest_hash": self._manifest_head, "manifest_hash": mh}
         with open(self.manifest_path, "a", encoding="utf-8") as fh:
@@ -175,6 +187,7 @@ class CalibrationStore:
             fh.flush()
             os.fsync(fh.fileno())
         self._manifest_head = mh
+        self._manifest_counts[table] = count
 
     def seed_manifest_baseline(self) -> int:
         """One-time migration: attest the current per-table heads for a DB that predates the manifest.
@@ -186,7 +199,10 @@ class CalibrationStore:
             for table in _TABLES:
                 head = self._head(table)
                 if head != GENESIS:
-                    self._append_manifest(table, head)
+                    n = self._conn.execute(
+                        f"SELECT COUNT(*) c FROM {table}"  # noqa: S608 - table is an internal literal
+                    ).fetchone()["c"]
+                    self._append_manifest(table, head, count=n)  # M2: seed the true row count
                     written += 1
         return written
 
@@ -302,41 +318,47 @@ class CalibrationStore:
     def resolve_forecast(
         self, forecast_id: str, outcome: bool, resolved_at: str, is_correction: bool = False, reason: str = ""
     ) -> ForecastRecord:
-        row = self._forecast_row(forecast_id)
-        if self._is_voided(forecast_id):
-            raise ForecastError("cannot resolve a voided forecast.")
-        existing = self._latest_resolution(forecast_id)
-        if existing is not None and not is_correction:
-            raise ForecastError(
-                "forecast already resolved — pass is_correction=True with a reason to supersede (never edited)."
-            )
-        if is_correction and not reason.strip():
-            raise ForecastError("a correction requires a non-empty reason.")
-        if is_correction and existing is None:
-            raise ForecastError("is_correction=True but there is no prior resolution to correct.")
         if len(reason) > MAX_TEXT:
             raise ForecastError(f"reason exceeds max length {MAX_TEXT}.")
-        # resolved_at must be a real ISO-8601 timestamp and cannot predate the forecast lock — else an
-        # outcome could be backdated to any date, corrupting the audit trail (S4).
+        # resolved_at must be a real ISO-8601 timestamp (pure input validation — no chain state yet).
         try:
             resolved_dt = _parse_iso(resolved_at)
         except ValueError as e:
             raise ForecastError(f"resolved_at must be ISO-8601 (e.g. 2026-01-31 or 2026-01-31T12:00:00Z): {e}")
-        # N5: locked_at is written by the store itself, so a parse failure means the row is corrupt —
-        # fail loud rather than silently disabling the anti-backdating check.
-        try:
-            locked_dt = _parse_iso(row["locked_at"])
-        except ValueError as e:
-            raise ForecastError(
-                f"stored locked_at ({row['locked_at']!r}) is not valid ISO-8601 — refusing to resolve "
-                f"against a corrupt lock timestamp: {e}"
-            )
-        if resolved_dt < locked_dt:
-            raise ForecastError(
-                f"resolved_at ({resolved_at}) is earlier than the forecast's locked_at ({row['locked_at']})."
-            )
 
+        # M1 (TOCTOU): the single-resolution decision (does a prior resolution already exist?) and the
+        # head-read + INSERT MUST be one atomic critical section. Reading `_latest_resolution` OUTSIDE the lock
+        # lets two concurrent resolve_forecast(is_correction=False) calls both observe "unresolved" and both
+        # append a first resolution — silently defeating the no-double-resolve invariant. Mirror the correct
+        # _insert_hypothesis / evidence-ledger _insert_grade pattern: check-then-act under the lock.
         with self._write_lock:
+            row = self._forecast_row(forecast_id)
+            if self._is_voided(forecast_id):
+                raise ForecastError("cannot resolve a voided forecast.")
+            existing = self._latest_resolution(forecast_id)
+            if existing is not None and not is_correction:
+                raise ForecastError(
+                    "forecast already resolved — pass is_correction=True with a reason to supersede "
+                    "(never edited)."
+                )
+            if is_correction and not reason.strip():
+                raise ForecastError("a correction requires a non-empty reason.")
+            if is_correction and existing is None:
+                raise ForecastError("is_correction=True but there is no prior resolution to correct.")
+            # N5: locked_at is written by the store itself, so a parse failure means the row is corrupt —
+            # fail loud rather than silently disabling the anti-backdating check.
+            try:
+                locked_dt = _parse_iso(row["locked_at"])
+            except ValueError as e:
+                raise ForecastError(
+                    f"stored locked_at ({row['locked_at']!r}) is not valid ISO-8601 — refusing to resolve "
+                    f"against a corrupt lock timestamp: {e}"
+                )
+            # resolved_at cannot predate the forecast lock — else an outcome could be backdated (S4).
+            if resolved_dt < locked_dt:
+                raise ForecastError(
+                    f"resolved_at ({resolved_at}) is earlier than the forecast's locked_at ({row['locked_at']})."
+                )
             payload = {
                 "forecast_id": forecast_id,
                 "outcome": int(bool(outcome)),
@@ -360,19 +382,22 @@ class CalibrationStore:
         return self.get_forecast(forecast_id)
 
     def void_forecast(self, forecast_id: str, reason: str) -> ForecastRecord:
-        self._forecast_row(forecast_id)
-        if self._latest_resolution(forecast_id) is not None:
-            raise ForecastError(
-                "cannot void an already-resolved forecast (that would let a bad outcome be purged "
-                "retroactively). void is pre-resolution only."
-            )
-        if self._is_voided(forecast_id):
-            raise ForecastError("forecast already voided.")
         if not reason.strip():
             raise ForecastError("void requires a non-empty reason.")
         if len(reason) > MAX_TEXT:
             raise ForecastError(f"reason exceeds max length {MAX_TEXT}.")
+        # M1 (TOCTOU): existence + not-resolved + not-already-voided decisions and the INSERT are one atomic
+        # critical section (mirrors resolve_forecast). Reading these outside the lock lets a concurrent
+        # resolve/void interleave defeat the pre-resolution-only + single-void invariants.
         with self._write_lock:
+            self._forecast_row(forecast_id)
+            if self._latest_resolution(forecast_id) is not None:
+                raise ForecastError(
+                    "cannot void an already-resolved forecast (that would let a bad outcome be purged "
+                    "retroactively). void is pre-resolution only."
+                )
+            if self._is_voided(forecast_id):
+                raise ForecastError("forecast already voided.")
             payload = {"forecast_id": forecast_id, "reason": reason, "at": _now_iso()}
             prev = self._head("voids")
             rh = _row_hash(prev, payload)
@@ -516,9 +541,11 @@ class CalibrationStore:
         # is accepted and scope is always reported as "all" (S8) — the response never claims a narrower
         # check than the one that actually ran.
         heads: dict[str, str] = {}
+        counts: dict[str, int] = {}
         verified = 0
         for table in _TABLES:
             prev = GENESIS
+            count = 0
             rows = self._conn.execute(
                 f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
             ).fetchall()
@@ -534,10 +561,13 @@ class CalibrationStore:
                         ),
                     )
                 prev = r["row_hash"]
+                count += 1
                 verified += 1
             heads[table] = prev
-        # External manifest check: DB head must match the last manifest entry per table (whole-chain deletion).
-        manifest_ok, mismatch = self._check_manifest(heads)
+            counts[table] = count
+        # External manifest check: DB head AND row count must match the last manifest entry per table
+        # (catches whole-chain deletion and trailing-row truncation of a self-consistent shorter chain).
+        manifest_ok, mismatch = self._check_manifest(heads, counts)
         return ChainStatus(
             server="calibration-tracker", scope="all", ok=manifest_ok,
             head_hash=heads, rows_verified=verified, mismatch=mismatch,
@@ -559,7 +589,9 @@ class CalibrationStore:
             }
         return {"forecast_id": r["forecast_id"], "reason": r["reason"], "at": r["at"]}
 
-    def _check_manifest(self, heads: dict[str, str]) -> tuple[bool, ChainMismatch | None]:
+    def _check_manifest(
+        self, heads: dict[str, str], counts: dict[str, int]
+    ) -> tuple[bool, ChainMismatch | None]:
         # In-memory stores have no manifest by design (nothing to attest).
         if not self.manifest_path:
             return True, None
@@ -578,6 +610,7 @@ class CalibrationStore:
         # Walk the manifest, verifying its own hash-chain so a mid-file line cannot be edited/dropped
         # undetected, and collect the last attested head per table.
         last: dict[str, str] = {}
+        last_count: dict[str, int] = {}
         prev = GENESIS
         with open(self.manifest_path, encoding="utf-8") as fh:
             for line in fh:
@@ -585,7 +618,10 @@ class CalibrationStore:
                 if not line:
                     continue
                 e = json.loads(line)
-                expected = _row_hash(prev, {"table": e["table"], "head": e["head"], "at": e["at"]})
+                mpayload = {"table": e["table"], "head": e["head"], "at": e["at"]}
+                if "count" in e:  # M2: count is part of the attested (hashed) payload when present
+                    mpayload["count"] = e["count"]
+                expected = _row_hash(prev, mpayload)
                 if e.get("prev_manifest_hash") != prev or e.get("manifest_hash") != expected:
                     return False, ChainMismatch(
                         table=e.get("table", "?"), row_id="<manifest-chain>",
@@ -593,6 +629,8 @@ class CalibrationStore:
                     )
                 prev = expected
                 last[e["table"]] = e["head"]
+                if "count" in e:
+                    last_count[e["table"]] = e["count"]
         for table in non_genesis:
             if table not in last:
                 return False, ChainMismatch(
@@ -604,5 +642,14 @@ class CalibrationStore:
             if dbhead != mhead:
                 return False, ChainMismatch(
                     table=table, row_id="<manifest>", expected_hash=mhead, got_hash=dbhead
+                )
+        # M2: the last attested per-table row count must match the live table — catches trailing-row
+        # truncation that leaves a self-consistent but shorter chain (defense-in-depth alongside the head
+        # check; the residual both-truncated attack needs an off-host WORM anchor — see _append_manifest).
+        for table, mcount in last_count.items():
+            if mcount != counts.get(table, 0):
+                return False, ChainMismatch(
+                    table=table, row_id="<manifest-count>",
+                    expected_hash=f"{mcount} rows (manifest)", got_hash=f"{counts.get(table, 0)} rows (table)",
                 )
         return True, None

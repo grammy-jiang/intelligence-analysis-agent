@@ -1,6 +1,6 @@
 ---
 name: calibrated-forecasting
-description: "Produce the calibrated numeric probability — a draft Judgment — for a question under uncertainty: outside view / base rate first, Fermi-decompose, fold in the bias/deception review findings, adjust with case specifics, then state an explicit number with confidence and dissent. Invoke when a defensible probability is needed (not a hedge word like 'likely') and being over- or under-confident is costly. This is the sole entry point for producing a committed probability. Runs as Step 9 of the structured-analysis workflow, which owns the independent reviewer audit (Step 9a), the human gate (Step 10), and the commit (Step 10a): this skill produces the number, it does not audit, approve, or lock it."
+description: "Produce the calibrated numeric probability — a draft Judgment — for a question under uncertainty: outside view / base rate first, Fermi-decompose, fold in the bias/deception review findings, adjust with case specifics, then state an explicit number with confidence and dissent. Invoke when a defensible probability is needed (not a hedge word like 'likely') and being over- or under-confident is costly. This is the sole entry point for producing the draft probability — the pipeline commits it only after the orchestrator's Step 9a audit, Step 10 human gate, and Step 10a lock. Runs as Step 9 of the structured-analysis workflow, which owns the independent reviewer audit (Step 9a), the human gate (Step 10), and the commit (Step 10a): this skill produces the number, it does not audit, approve, or lock it."
 allowed-tools: calibration-tracker:get_calibration_report
 ---
 
@@ -104,7 +104,10 @@ Everything that **writes or locks** is the orchestrator's, not this skill's:
 
 - **Required order: draft → reviewer audit → human gate → `log_forecast` lock.**
 - "Log the draft" in the Procedure means **write it into the case artifact** — it is not the `log_forecast`
-  tool call.
+  tool call. The case artifact is the `structured-analysis` orchestrator's in-context **case workspace**
+  (`PIPELINE-grounded.md` per-case `case-workspace`; drafted in-context this phase, no MCP server), so recording
+  the draft there — or returning it to the orchestrator — needs **no write tool**. `get_calibration_report`
+  (read-only) is correctly this skill's sole MCP grant, and the read-only restriction does not block step 9.
 - The reviewer audit (`calibration-forecasting-reviewer` via Task) is the orchestrator's **Step 9a**, run on
   the raw case state.
 - The human decisionmaker who owns the finished Assessment approves at the orchestrator's **Step 10** —
