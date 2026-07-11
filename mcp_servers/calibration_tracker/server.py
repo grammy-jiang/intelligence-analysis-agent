@@ -35,7 +35,7 @@ mcp = FastMCP("calibration-tracker", mask_error_details=True)
 
 @mcp.tool
 def log_forecast(
-    case_id: Annotated[str, Field(max_length=200, description="Analytic case this forecast belongs to.")],
+    case_id: Annotated[str, Field(max_length=512, description="Analytic case this forecast belongs to.")],
     question: Annotated[
         str,
         Field(
@@ -139,7 +139,7 @@ def get_forecast(
 @mcp.tool
 def list_forecasts(
     case_id: Annotated[
-        str | None, Field(default=None, max_length=200, description="Filter to one analytic case; omit for all.")
+        str | None, Field(default=None, max_length=512, description="Filter to one analytic case; omit for all.")
     ] = None,
     resolved: Annotated[
         bool | None,
@@ -160,7 +160,7 @@ def list_forecasts(
 @mcp.tool
 def get_calibration_report(
     case_id: Annotated[
-        str | None, Field(default=None, max_length=200, description="Scope the report to one case; omit for all.")
+        str | None, Field(default=None, max_length=512, description="Scope the report to one case; omit for all.")
     ] = None,
 ) -> CalibrationReport:
     """COMPUTE Brier + a calibration table + Murphy resolution/reliability over analyst_confirmed, non-voided,

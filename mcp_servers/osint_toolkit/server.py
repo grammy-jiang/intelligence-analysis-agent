@@ -109,6 +109,17 @@ def _screen_or_audit(tool: str, text: str, fields: dict) -> None:
         raise
 
 
+def _require_confirmed_or_audit(tool: str, confirmed: bool, fields: dict, message: str) -> None:
+    """control #10 + #7c: a consent/provenance REFUSAL is itself an egress-relevant event. Record an audit
+    row BEFORE raising so a blocked attempt still leaves a trace (mirrors _screen_or_audit) — these three
+    gates previously raised before any audit.record, so a refused upload/disclosure/fetch left NO trace,
+    breaking control #10 (every egress attempt audited). `confirmed` is the already-evaluated gate predicate
+    (True = allowed to proceed); only the allowlisted `fields` are logged, never the URL/coords."""
+    if not confirmed:
+        audit.record(tool, fields, "-", "blocked (confirmation required)")
+        raise ToolError(message)
+
+
 @mcp.tool
 def search(
     query: Annotated[str, Field(max_length=_MAX_QUERY)],
@@ -141,8 +152,13 @@ def fetch(
 
     S3: no live connector populates the provenance set in this deployment (the stub `search` always raises),
     so today `confirmed=True` is required for every first fetch — it is not populated by any prior search."""
-    if url not in _session_urls and not confirmed:
-        raise ToolError("url did not originate from a prior in-session search result; pass confirmed=True")
+    # control #7a/#10: a URL without prior-search provenance (and no analyst override) is refused — and the
+    # refusal is AUDITED before raising, so a blocked freeform-fetch attempt leaves a trace like every other
+    # egress attempt. The predicate passes when the URL has provenance OR the analyst confirmed the override.
+    _require_confirmed_or_audit(
+        "fetch", url in _session_urls or confirmed, {"host": "?"},
+        "url did not originate from a prior in-session search result; pass confirmed=True",
+    )
     _screen_or_audit("fetch", url, {"host": "?"})  # MF1: a blocked exfil URL still leaves an audit row
     try:
         host, ip = validate_url(url)  # fetch = SSRF blocklist (no per-connector allowlist)
@@ -185,7 +201,7 @@ def fetch(
 
 
 @mcp.tool
-def compute_hash(artifact_ref: str) -> HashResult:
+def compute_hash(artifact_ref: Annotated[str, Field(max_length=_MAX_ID)]) -> HashResult:
     """SHA-256 of a stored artifact (LOCAL, no egress)."""
     try:
         return HashResult(artifact_ref=artifact_ref, sha256=artifacts.compute_hash(artifact_ref))
@@ -194,7 +210,7 @@ def compute_hash(artifact_ref: str) -> HashResult:
 
 
 @mcp.tool
-def extract_exif(artifact_ref: str) -> ExifData:
+def extract_exif(artifact_ref: Annotated[str, Field(max_length=_MAX_ID)]) -> ExifData:
     """Parse EXIF from a stored artifact (LOCAL, no egress). Verifies real magic bytes (never a remote
     Content-Type); CANDIDATE only. (Full EXIF field parsing via a memory-safe library is a follow-on; the
     hardening — magic-byte check, size cap, no shell-out — is enforced here.)"""
@@ -217,7 +233,7 @@ def extract_exif(artifact_ref: str) -> ExifData:
 
 @mcp.tool
 def reverse_image_search(
-    artifact_ref: str,
+    artifact_ref: Annotated[str, Field(max_length=_MAX_ID)],
     connector: Connector,
     confirmed: Annotated[
         bool,
@@ -230,8 +246,11 @@ def reverse_image_search(
     """CANDIDATE image matches. Uploads the image to an external connector — may transmit a subject's likeness
     — so it REQUIRES `confirmed=True` (control #7c). NOTE: no live connector is configured in this deployment
     — the call runs the guard/audit then fails closed with a ToolError (review S19)."""
-    if not confirmed:
-        raise ToolError("reverse_image_search uploads an image to a third party; pass confirmed=True")
+    # control #7c/#10: refusing the upload is an egress-relevant event — audit it before raising.
+    _require_confirmed_or_audit(
+        "reverse_image_search", confirmed, {"connector": connector},
+        "reverse_image_search uploads an image to a third party; pass confirmed=True",
+    )
     try:
         artifacts.read(artifact_ref)  # validates the token
     except ArtifactError as e:
@@ -260,8 +279,11 @@ def get_map_tile(
     tile provider, so it REQUIRES `confirmed=True` (control #7c — same third-party-disclosure gate as `fetch`
     and `reverse_image_search`). S5: lat/lon/zoom bounds are enforced at the JSON schema so clients self-validate.
     NOTE: no live connector is configured in this deployment — the call fails closed with a ToolError (S19)."""
-    if not confirmed:
-        raise ToolError("get_map_tile discloses coordinates to a third-party tile provider; pass confirmed=True")
+    # control #7c/#10: refusing the coordinate disclosure is an egress-relevant event — audit it before raising.
+    _require_confirmed_or_audit(
+        "get_map_tile", confirmed, {"connector": connector, "zoom": zoom},
+        "get_map_tile discloses coordinates to a third-party tile provider; pass confirmed=True",
+    )
     audit.record("get_map_tile", {"connector": connector, "zoom": zoom}, "-", "attempt")
     if not OSINT_LIVE:
         raise ToolError("live connector disabled (set OSINT_LIVE=1). Guard/audit ran.")

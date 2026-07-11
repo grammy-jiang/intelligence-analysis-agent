@@ -8,7 +8,12 @@ import sqlite3
 
 import pytest
 
-from mcp_servers.calibration_tracker.store import CalibrationStore, ForecastError
+from mcp_servers.calibration_tracker.store import (
+    GENESIS,
+    CalibrationStore,
+    ForecastError,
+    _row_hash,
+)
 
 
 @pytest.fixture()
@@ -268,33 +273,12 @@ def test_second_writer_refused(tmp_path):
 
 
 # --- M1: the single-resolution decision runs INSIDE the write lock (TOCTOU: check-then-act atomic) ---
-def test_resolution_check_runs_inside_write_lock(store):
+def test_resolution_check_runs_inside_write_lock(store, tracked_lock):
     # The prior code read _latest_resolution (the "already resolved?" decision) BEFORE acquiring the lock —
     # two concurrent resolve_forecast(is_correction=False) calls could both observe "unresolved" and both
     # append a first resolution, defeating the no-double-resolve invariant. Prove the decision read now
     # happens while the write lock is held (mirrors evidence-ledger's grade-existence TOCTOU test).
-    class _TrackedLock:
-        def __init__(self, inner):
-            self._inner = inner
-            self.depth = 0
-
-        def acquire(self, *a, **k):
-            r = self._inner.acquire(*a, **k)
-            self.depth += 1
-            return r
-
-        def release(self):
-            self.depth -= 1
-            self._inner.release()
-
-        def __enter__(self):
-            self.acquire()
-            return self
-
-        def __exit__(self, *a):
-            self.release()
-
-    store._write_lock = _TrackedLock(store._write_lock)
+    store._write_lock = tracked_lock(store._write_lock)  # TrackedLock helper lives in conftest.py (DRY)
     depths: list[int] = []
     orig = store._latest_resolution
 
@@ -350,3 +334,49 @@ def test_corrupt_locked_at_blocks_resolve(store, tmp_path):
     raw.close()
     with pytest.raises(ForecastError, match="corrupt lock timestamp"):
         store.resolve_forecast(ref.forecast_id, True, "2030-01-01")
+
+
+# --- item #10: case_id (the shared cross-server correlation key) is capped at 512, aligned with siblings ---
+def test_case_id_cap_aligned_to_512(store):
+    # A 512-char case_id — valid in ach-engine / evidence-ledger (both 512) — must now be accepted here too
+    # (it was rejected at the old 200 cap); 513 is the first rejected length. Pins the aligned value at the
+    # store layer (a revert to MAX_ID=200 makes the 512-char log_forecast raise, failing the first line).
+    store.log_forecast("c" * 512, "q", 0.5, "def", "3mo", "analyst_confirmed")
+    with pytest.raises(ForecastError, match="case_id exceeds max length 512"):
+        store.log_forecast("c" * 513, "q2", 0.5, "def", "3mo", "analyst_confirmed")
+
+
+# --- item #8: a PRE-count manifest must not cause a false tamper after the count anchor is added ---
+def test_manifest_count_migration_from_precount(tmp_path):
+    # _read_manifest_state falls back to the live table's COUNT(*) when a table has manifest entries but none
+    # carry "count" — so the NEXT write attests the correct running count (not 1 from a zero seed), and
+    # verify_chain stays green on upgrade instead of reporting a spurious trailing-truncation tamper.
+    db = str(tmp_path / "cal.db")
+    a = CalibrationStore(db, analyst_id="m")
+    try:
+        _log(a, q="q1")
+        _log(a, q="q2")
+        assert a.verify_chain().ok is True
+    finally:
+        a.close()
+    # Rewrite the manifest into the PRE-count format (strip "count"), recomputing the self-chain over the
+    # count-less payload so it stays internally valid — exactly what an old-format manifest looks like on disk.
+    mp = tmp_path / "cal.db.manifest.jsonl"
+    prev = GENESIS
+    out: list[str] = []
+    for ln in mp.read_text().splitlines():
+        if not ln.strip():
+            continue
+        e = json.loads(ln)
+        payload = {"table": e["table"], "head": e["head"], "at": e["at"]}  # NO "count"
+        mh = _row_hash(prev, payload)
+        out.append(json.dumps({**payload, "prev_manifest_hash": prev, "manifest_hash": mh}))
+        prev = mh
+    mp.write_text("\n".join(out) + "\n")
+    b = CalibrationStore(db, analyst_id="m")
+    try:
+        assert b.verify_chain().ok is True  # the pre-count manifest verifies (no false tamper on read)
+        _log(b, q="q3")  # migration seeded the count from the live table -> this attests count=3, not 1
+        assert b.verify_chain().ok is True  # WITHOUT the fallback: a FALSE tamper (manifest 1 vs table 3 rows)
+    finally:
+        b.close()

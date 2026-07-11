@@ -62,6 +62,9 @@ _MAX_ITEM = 100_000
 _MAX_ID = 512
 _MAX_TEXT = 10_000
 _MAX_OBSERVABLES = 256
+# DoS: cap each observable KEY and VALUE, not only the entry count — one entry with a giant value
+# ({"h": "A"*50_000_000}) would otherwise pass the count check and persist into the append-only row.
+_MAX_OBSERVABLE_VAL = 2000
 # MF2: the host-gate opt-in is an explicit ALLOW-LIST of truthy tokens, not env-var presence. os.environ.get
 # returns a non-empty string for EVIDENCE_ALLOW_UNREDACT=0 / =false (an operator's intent to DISABLE), which is
 # truthy in Python — so a presence check would grant life-safety unredaction on a value meant to deny it.
@@ -106,8 +109,14 @@ def add_evidence(
     - `expected_observables`: maps hypothesis_id -> 'should see' / 'should not see' under that hypothesis
       (at most 256 entries).
     """
-    if expected_observables is not None and len(expected_observables) > _MAX_OBSERVABLES:
-        raise ToolError(f"expected_observables has too many entries (max {_MAX_OBSERVABLES}).")
+    if expected_observables is not None:
+        if len(expected_observables) > _MAX_OBSERVABLES:
+            raise ToolError(f"expected_observables has too many entries (max {_MAX_OBSERVABLES}).")
+        for k, v in expected_observables.items():
+            if len(k) > _MAX_ID:
+                raise ToolError(f"an expected_observables key exceeds max length {_MAX_ID}.")
+            if len(v) > _MAX_OBSERVABLE_VAL:
+                raise ToolError(f"an expected_observables value exceeds max length {_MAX_OBSERVABLE_VAL}.")
     try:
         return store.add_evidence(
             case_id, item, source_id, evidence_type, pii, source_channel, expected_observables

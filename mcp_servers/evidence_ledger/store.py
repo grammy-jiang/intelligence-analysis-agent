@@ -36,6 +36,17 @@ _TABLES = ("evidence", "grades")
 # human action) remains the calling skill's responsibility + the deferred token-gated confirm step.
 _JUDGMENT_SOURCE = ("analyst_confirmed", "model_draft")
 
+# S7/DoS: store-layer length caps (defense-in-depth; mirrors calibration_tracker's store-layer caps and the
+# tool-boundary caps in server.py). The ledger is append-only with NO reclamation, so a direct store caller
+# (test/script/other transport that bypasses the pydantic Field caps) must not be able to inflate the
+# hash-chained payload without limit. `expected_observables` in particular was only count-capped (256 entries)
+# at the tool layer — a single huge VALUE (e.g. {"h": "A"*50_000_000}) slipped straight through to the row.
+_MAX_ID = 512
+_MAX_ITEM = 100_000
+_MAX_TEXT = 10_000
+_MAX_OBSERVABLES = 256
+_MAX_OBSERVABLE_VAL = 2000
+
 
 class EvidenceError(Exception):
     """Business-rule violation; the server wraps this as a FastMCP ToolError."""
@@ -172,6 +183,25 @@ class EvidenceStore:
         expected_observables: dict[str, str] | None = None,
     ) -> EvidenceRef:
         expected_observables = expected_observables if expected_observables is not None else {}
+        # S7/DoS: bound every string that lands in the append-only row (mirrors calibration's store-layer caps).
+        for name, value, cap in (
+            ("case_id", case_id, _MAX_ID),
+            ("item", item, _MAX_ITEM),
+            ("source_id", source_id, _MAX_ID),
+            ("evidence_type", evidence_type, _MAX_ID),
+            ("source_channel", source_channel, _MAX_ID),
+        ):
+            if len(value) > cap:
+                raise EvidenceError(f"{name} exceeds max length {cap}.")
+        # expected_observables: cap the ENTRY COUNT and, per entry, the KEY and the VALUE — the value cap is the
+        # DoS closure the tool-boundary 256-entry count missed ({"h": "A"*50_000_000} was one entry, uncapped).
+        if len(expected_observables) > _MAX_OBSERVABLES:
+            raise EvidenceError(f"expected_observables has too many entries (max {_MAX_OBSERVABLES}).")
+        for k, v in expected_observables.items():
+            if len(k) > _MAX_ID:
+                raise EvidenceError(f"expected_observables key exceeds max length {_MAX_ID}.")
+            if len(v) > _MAX_OBSERVABLE_VAL:
+                raise EvidenceError(f"expected_observables value exceeds max length {_MAX_OBSERVABLE_VAL}.")
         evidence_id = uuid.uuid4().hex
         payload = {
             "evidence_id": evidence_id, "case_id": case_id, "item": item, "source_id": source_id,
@@ -181,15 +211,18 @@ class EvidenceStore:
         with self._write_lock:
             prev = self._head("evidence")
             rh = row_hash(prev, payload)
-            self._conn.execute(
-                "INSERT INTO evidence(evidence_id, case_id, item, source_id, evidence_type, source_channel, "
-                "expected_observables, pii, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?)",
-                (
-                    evidence_id, case_id, item, source_id, evidence_type, source_channel,
-                    json.dumps(expected_observables, sort_keys=True), int(bool(pii)), prev, rh,
-                ),
-            )
-            self._conn.commit()
+            # M3/atomic: `with self._conn` commits on success and ROLLS BACK on any failed insert (mirrors
+            # ach-engine's idiom) so no dangling open transaction can be smuggled into the ledger by the next
+            # commit. The manifest is appended only AFTER the commit succeeds.
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO evidence(evidence_id, case_id, item, source_id, evidence_type, source_channel, "
+                    "expected_observables, pii, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence_id, case_id, item, source_id, evidence_type, source_channel,
+                        json.dumps(expected_observables, sort_keys=True), int(bool(pii)), prev, rh,
+                    ),
+                )
             self._append_manifest("evidence", rh)
         return EvidenceRef(evidence_id=evidence_id, case_id=case_id, pii=bool(pii))
 
@@ -238,6 +271,15 @@ class EvidenceStore:
             raise EvidenceError(
                 f"judgment_source must be one of {_JUDGMENT_SOURCE}, got {judgment_source!r}."
             )
+        # S7/DoS: bound the free-text grade strings that persist into the append-only row (mirrors add_evidence
+        # + calibration's store-layer caps); reliability/credibility are enum-validated at the tool boundary.
+        for name, value, cap in (
+            ("diagnosticity", diagnosticity, _MAX_TEXT),
+            ("rationale", rationale, _MAX_TEXT),
+            ("reason", reason, _MAX_TEXT),
+        ):
+            if len(value) > cap:
+                raise EvidenceError(f"{name} exceeds max length {cap}.")
         graded_at = now_iso()
         payload = {
             "evidence_id": evidence_id, "reliability": reliability, "credibility": credibility,
@@ -256,15 +298,17 @@ class EvidenceStore:
                 raise EvidenceError("no prior grade exists for this evidence — use grade_evidence first.")
             prev = self._head("grades")
             rh = row_hash(prev, payload)
-            self._conn.execute(
-                "INSERT INTO grades(evidence_id, reliability, credibility, diagnosticity, analyst_id, "
-                "judgment_source, rationale, reason, graded_at, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    evidence_id, reliability, credibility, diagnosticity, self.analyst_id, judgment_source,
-                    rationale, reason, graded_at, prev, rh,
-                ),
-            )
-            self._conn.commit()
+            # M3/atomic: `with self._conn` commits on success and ROLLS BACK on a failed insert (mirrors
+            # ach-engine's idiom) so no dangling open transaction survives to the next commit.
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO grades(evidence_id, reliability, credibility, diagnosticity, analyst_id, "
+                    "judgment_source, rationale, reason, graded_at, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        evidence_id, reliability, credibility, diagnosticity, self.analyst_id, judgment_source,
+                        rationale, reason, graded_at, prev, rh,
+                    ),
+                )
             self._append_manifest("grades", rh)
             # cross-server signals: a (re)grade marks dependent ACH cells stale, and records the grade's
             # judgment_source so ach-engine can refuse to score evidence that was never analyst_confirmed.

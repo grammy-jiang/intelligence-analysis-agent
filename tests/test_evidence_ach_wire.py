@@ -58,35 +58,38 @@ async def _ach() -> None:
 
 async def _ach_hypothesis_length_cap() -> None:
     async with Client(ach_mcp) as c:
-        # M2: each hypothesis STRING is capped at _MAX_TEXT (not only the list length) — an oversized
-        # hypothesis is rejected at the tool schema before it can persist into the append-only store.
-        try:
-            await c.call_tool("create_matrix", {"case_id": "c", "hypotheses": ["ok", "x" * 10_001]})
-            raise AssertionError("expected ToolError for an oversized hypothesis")
-        except ToolError:
-            pass
-        # min_length=1: an empty hypothesis list is rejected at the schema too.
-        try:
-            await c.call_tool("create_matrix", {"case_id": "c", "hypotheses": []})
-            raise AssertionError("expected ToolError for an empty hypothesis list")
-        except ToolError:
-            pass
+        async def err(args) -> str:
+            try:
+                await c.call_tool("create_matrix", args)
+                raise AssertionError(f"expected ToolError for {args!r}")
+            except ToolError as e:
+                return str(e)
+
+        # M2: each hypothesis STRING is capped at _MAX_TEXT at the SCHEMA (Pydantic string_too_long) — rejected
+        # before it can persist into the append-only store. Pinned to the schema message (item #11).
+        assert "at most 10000 characters" in await err({"case_id": "c", "hypotheses": ["ok", "x" * 10_001]})
+        # min_length=1: an empty hypothesis list is rejected at the SCHEMA (Pydantic too_short). Pinned to the
+        # schema-specific message so this cannot silently pass on the store's "non-empty" rejection instead —
+        # the empty-list case must distinguish schema-reject from store-reject (item #11).
+        assert "at least 1 item" in await err({"case_id": "c", "hypotheses": []})
 
 
 async def _ev_read_path_id_cap() -> None:
     async with Client(ev_mcp) as c:
-        # SF1: read-path IDs carry the same _MAX_ID (512) cap as the write tools — an oversized id is
-        # rejected at the schema, never reaching SQLite.
-        for tool, args in (
-            ("get_evidence", {"evidence_id": "x" * 600}),
-            ("list_evidence", {"case_id": "x" * 600}),
-            ("get_source_history", {"source_id": "x" * 600}),
-        ):
+        async def err(tool, args) -> str:
             try:
                 await c.call_tool(tool, args)
                 raise AssertionError(f"expected ToolError from {tool} on an oversized id")
-            except ToolError:
-                pass
+            except ToolError as e:
+                return str(e)
+
+        # SF1: read-path IDs carry the same _MAX_ID (512) cap as the write tools — rejected at the SCHEMA
+        # (Pydantic string_too_long), never reaching SQLite. Pinned to the schema message (item #11): if the
+        # cap were absent, get_evidence would raise "unknown id" and list_evidence/get_source_history would
+        # return empty with NO error — so a bare `except ToolError` did not actually prove the cap fired.
+        assert "at most 512 characters" in await err("get_evidence", {"evidence_id": "x" * 600})
+        assert "at most 512 characters" in await err("list_evidence", {"case_id": "x" * 600})
+        assert "at most 512 characters" in await err("get_source_history", {"source_id": "x" * 600})
 
 
 def test_evidence_wire():

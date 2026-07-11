@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -217,39 +218,25 @@ def test_create_matrix_rejects_blank_case_id(ach):
         ach.create_matrix("  ", ["H1"])
 
 
+def test_create_matrix_rejects_oversized_case_id(ach):
+    # S5: store-layer length cap (defense-in-depth) — a direct store caller bypassing the tool-schema Field
+    # must not persist an unbounded case_id into the append-only matrices table.
+    with pytest.raises(ACHError, match="max length"):
+        ach.create_matrix("x" * 1000, ["H1"])
+
+
 def test_verify_chain_scope_is_always_all(ach):
     # MF4: integrity is table-wide, never case-scoped; the dead case_id filter was removed.
     ach.create_matrix("c", ["H1"])
     assert ach.verify_chain().scope == "all"
 
 
-def test_head_read_runs_inside_write_lock(ach):
+def test_head_read_runs_inside_write_lock(ach, tracked_lock):
     # M1 (TOCTOU): create_matrix / rate_cell previously read the chain head + computed row_hash BEFORE
     # acquiring the write lock — two concurrent writers could hash against the same stale head and fork the
     # append-only chain (verify_chain then reports a false tamper on ordinary concurrency). Prove every _head
     # read during a write now happens while the lock is held (mirrors _insert_hypothesis).
-    class _TrackedLock:
-        def __init__(self, inner):
-            self._inner = inner
-            self.depth = 0
-
-        def acquire(self, *a, **k):
-            r = self._inner.acquire(*a, **k)
-            self.depth += 1
-            return r
-
-        def release(self):
-            self.depth -= 1
-            self._inner.release()
-
-        def __enter__(self):
-            self.acquire()
-            return self
-
-        def __exit__(self, *a):
-            self.release()
-
-    ach._write_lock = _TrackedLock(ach._write_lock)
+    ach._write_lock = tracked_lock(ach._write_lock)  # TrackedLock helper lives in conftest.py (DRY)
     depths: list[int] = []
     orig = ach._head
 
@@ -263,3 +250,74 @@ def test_head_read_runs_inside_write_lock(ach):
     ach.staleness.mark_graded("E1", "analyst_confirmed")
     ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "analyst_confirmed")  # _head("cells")
     assert depths and all(d > 0 for d in depths)  # every head read happened under the write lock
+
+
+def test_effective_cell_read_runs_inside_write_lock(ach, tracked_lock):
+    # M1 (TOCTOU, review item #1): rate_cell previously read _effective_cell (the supersede decision AND the
+    # reason-required gate) BEFORE acquiring the write lock — two concurrent rate_cell calls could both observe
+    # "no prior" and both insert a first rating / skip the reason requirement. Prove the effective-cell read
+    # now runs under the lock (mirrors test_head_read_runs_inside_write_lock / evidence-ledger's TOCTOU test).
+    ref = ach.create_matrix("c", ["H1"])
+    hid = ref.hypotheses[0].hypothesis_id
+    ach._write_lock = tracked_lock(ach._write_lock)
+    depths: list[int] = []
+    orig = ach._effective_cell
+
+    def probe(matrix_id, evidence_id, hypothesis_id):
+        depths.append(ach._write_lock.depth)
+        return orig(matrix_id, evidence_id, hypothesis_id)
+
+    ach._effective_cell = probe
+    ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "model_draft")
+    assert depths and depths[0] > 0  # the supersede decision read ran while the write lock was held
+
+
+def test_verify_chain_holds_write_lock(ach, tracked_lock):
+    # review item #2: verify_chain must hold the write lock for its whole read + manifest walk, so a verify
+    # interleaved with an in-flight write cannot read a committed-but-not-yet-manifest-attested row and report
+    # a spurious tamper. Prove _payload_for (called for every row INSIDE verify_chain) runs under the lock.
+    ach.create_matrix("c", ["H1"])  # >=1 row so _payload_for is exercised
+    ach._write_lock = tracked_lock(ach._write_lock)
+    depths: list[int] = []
+    orig = ach._payload_for
+
+    def probe(table, r):
+        depths.append(ach._write_lock.depth)
+        return orig(table, r)
+
+    ach._payload_for = probe
+    assert ach.verify_chain().ok is True
+    assert depths and all(d > 0 for d in depths)  # every payload build happened under the write lock
+
+
+def test_store_length_caps(ach):
+    # review item #6: the cells/hypotheses tables are append-only with NO reclamation, so the store itself
+    # (not only the tool-boundary pydantic caps) must bound the caller-controlled strings — a direct store
+    # caller cannot inflate the hash-chained payload without limit.
+    ref = ach.create_matrix("c", ["H1"])
+    hid = ref.hypotheses[0].hypothesis_id
+    with pytest.raises(ACHError, match="evidence_id exceeds max length"):
+        ach.rate_cell(ref.matrix_id, "E" * 513, hid, "C", "strong", "model_draft")
+    with pytest.raises(ACHError, match="reason exceeds max length"):
+        ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "model_draft", reason="r" * 10_001)
+    with pytest.raises(ACHError, match="hypothesis text exceeds max length"):
+        ach.add_hypothesis(ref.matrix_id, "H" * 10_001)
+
+
+def test_manifest_middle_line_edit_detected(ach):
+    # review item #7: the manifest is SELF-CHAINED (prev_manifest_hash / manifest_hash) so editing a
+    # NON-TERMINAL line is detected. The per-table head+count reconciliation alone only checks the LAST head
+    # per table, so an edit to an earlier line for a multi-entry table would slip through without the chain.
+    # create_matrix writes [matrices, hypotheses(H1), hypotheses(H2)] — edit the first hypotheses line (middle).
+    ach.create_matrix("c", ["H1", "H2"])
+    assert ach.verify_chain().ok is True
+    mp = ach.db_path + ".manifest.jsonl"
+    with open(mp, encoding="utf-8") as fh:
+        lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+    assert len(lines) >= 3  # a genuine middle line exists
+    e = json.loads(lines[1])  # first hypotheses entry — NOT the last per-table head, so only the self-chain catches it
+    e["head"] = "0" * 64  # rewrite its attested head; the recomputed manifest_hash no longer matches
+    lines[1] = json.dumps(e)
+    with open(mp, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines) + "\n")
+    assert ach.verify_chain().ok is False
