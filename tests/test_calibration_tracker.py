@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 import sqlite3
 
 import pytest
@@ -31,7 +33,8 @@ BRIER_ITEMS = [
 def test_brier_gate_matches_reference(store):
     for q, p, outcome in BRIER_ITEMS:
         ref = store.log_forecast("brier", q, p, "resolves to a yes/no", "1y", "analyst_confirmed")
-        store.resolve_forecast(ref.forecast_id, bool(outcome), "2026-01-01")
+        # resolved_at must be >= the forecast's locked_at (S4); use the lock time itself.
+        store.resolve_forecast(ref.forecast_id, bool(outcome), ref.locked_at)
     report = store.get_calibration_report(case_id="brier")
     reference_brier = sum((p - o) ** 2 for _, p, o in BRIER_ITEMS) / len(BRIER_ITEMS)
     assert report.n == 8
@@ -72,17 +75,19 @@ def test_probability_range_and_empty_criteria(store):
 # --- resolution + correction ----------------------------------------------
 def test_resolve_then_correct(store):
     ref = _log(store)
-    store.resolve_forecast(ref.forecast_id, True, "2026-01-01")
+    store.resolve_forecast(ref.forecast_id, True, ref.locked_at)
     assert store.get_forecast(ref.forecast_id).outcome is True
     # second resolve without correction is rejected
     with pytest.raises(ForecastError, match="already resolved"):
-        store.resolve_forecast(ref.forecast_id, False, "2026-02-01")
+        store.resolve_forecast(ref.forecast_id, False, ref.locked_at)
     # correction requires a reason
     with pytest.raises(ForecastError, match="reason"):
-        store.resolve_forecast(ref.forecast_id, False, "2026-02-01", is_correction=True)
+        store.resolve_forecast(ref.forecast_id, False, ref.locked_at, is_correction=True)
     # valid correction supersedes (latest wins), original row still present in the chain
-    store.resolve_forecast(ref.forecast_id, False, "2026-02-01", is_correction=True, reason="miscoded")
+    rec = store.resolve_forecast(ref.forecast_id, False, ref.locked_at, is_correction=True, reason="miscoded")
     assert store.get_forecast(ref.forecast_id).outcome is False
+    # correction is now visible on the record without a full chain audit (S12)
+    assert rec.was_corrected is True and rec.correction_count == 1
 
 
 def test_correction_requires_prior_resolution(store):
@@ -101,7 +106,7 @@ def test_void_excludes_and_counts(store):
     good = store.log_forecast("v", "keep", 0.9, "def", "1y", "analyst_confirmed")
     bad = store.log_forecast("v", "typo", 0.1, "def", "1y", "analyst_confirmed")
     store.void_forecast(bad.forecast_id, "typo in probability")
-    store.resolve_forecast(good.forecast_id, True, "2026-01-01")
+    store.resolve_forecast(good.forecast_id, True, good.locked_at)
     r = store.get_calibration_report(case_id="v")
     assert r.n == 1  # only the non-voided resolved forecast
     assert r.n_voided == 1
@@ -109,7 +114,7 @@ def test_void_excludes_and_counts(store):
 
 def test_cannot_void_resolved(store):
     ref = _log(store)
-    store.resolve_forecast(ref.forecast_id, True, "2026-01-01")
+    store.resolve_forecast(ref.forecast_id, True, ref.locked_at)
     with pytest.raises(ForecastError, match="pre-resolution only"):
         store.void_forecast(ref.forecast_id, "too late")
 
@@ -125,7 +130,7 @@ def test_cannot_resolve_voided(store):
 def test_chain_verifies_clean(store):
     for i in range(3):
         ref = _log(store, q=f"q{i}", p=0.1 * i)
-        store.resolve_forecast(ref.forecast_id, i % 2 == 0, "2026-01-01")
+        store.resolve_forecast(ref.forecast_id, i % 2 == 0, ref.locked_at)
     st = store.verify_chain()
     assert st.ok is True and st.mismatch is None and st.rows_verified == 6
 
@@ -140,3 +145,134 @@ def test_chain_detects_tamper(store, tmp_path):
     st = store.verify_chain()
     assert st.ok is False
     assert st.mismatch is not None and st.mismatch.table == "forecasts"
+
+
+# --- M1: external manifest is tamper-evident (whole-chain / manifest deletion) ---
+def test_manifest_deletion_is_detected(store, tmp_path):
+    _log(store, p=0.4)
+    assert store.verify_chain().ok is True
+    # deleting the manifest while DB rows survive must NOT pass vacuously (fail-closed)
+    os.remove(str(tmp_path / "cal.db.manifest.jsonl"))
+    st = store.verify_chain()
+    assert st.ok is False and st.mismatch is not None and "manifest" in st.mismatch.row_id
+
+
+def test_manifest_line_tamper_is_detected(store, tmp_path):
+    _log(store, p=0.4)
+    mp = tmp_path / "cal.db.manifest.jsonl"
+    lines = [ln for ln in mp.read_text().splitlines() if ln.strip()]
+    e = json.loads(lines[0])
+    e["head"] = "0" * 64  # rewrite the attested head; the self-chain hash no longer matches
+    mp.write_text(json.dumps(e) + "\n")
+    assert store.verify_chain().ok is False
+
+
+def test_verify_chain_scope_is_always_all(store):
+    _log(store)
+    assert store.verify_chain().scope == "all"  # integrity is table-wide, never case-scoped (S8)
+
+
+# --- S4: resolved_at is validated (ISO + not backdated before the lock) ---
+def test_resolved_at_cannot_predate_lock(store):
+    ref = _log(store)
+    with pytest.raises(ForecastError, match="earlier than"):
+        store.resolve_forecast(ref.forecast_id, True, "2000-01-01")
+
+
+def test_resolved_at_must_be_iso(store):
+    ref = _log(store)
+    with pytest.raises(ForecastError, match="ISO-8601"):
+        store.resolve_forecast(ref.forecast_id, True, "not-a-date")
+
+
+# --- S2: malformed pagination cursor is a business error, not a raw ValueError leak ---
+def test_bad_cursor_rejected(store):
+    _log(store)
+    with pytest.raises(ForecastError, match="cursor"):
+        store.list_forecasts(cursor="not-int")
+
+
+# --- S6/S5: required strings must be non-empty and bounded ---
+def test_empty_question_rejected(store):
+    with pytest.raises(ForecastError, match="question"):
+        store.log_forecast("c", "   ", 0.5, "def", "3mo", "analyst_confirmed")
+
+
+def test_oversized_field_rejected(store):
+    with pytest.raises(ForecastError, match="max length"):
+        store.log_forecast("c", "x" * 5000, 0.5, "def", "3mo", "analyst_confirmed")
+
+
+# --- S11: idempotency must not silently drop content that differs from a recent forecast ---
+def test_idempotency_does_not_drop_differing_content(store):
+    a = store.log_forecast("c", "q", 0.5, "criteria A", "3mo", "analyst_confirmed")
+    b = store.log_forecast("c", "q", 0.5, "criteria B", "3mo", "analyst_confirmed")
+    assert a.forecast_id != b.forecast_id  # differing criteria => a new forecast, not a silent dedup
+    c = store.log_forecast("c", "q", 0.5, "criteria A", "3mo", "analyst_confirmed")
+    assert c.forecast_id == a.forecast_id  # a truly identical retry within the window IS deduped
+
+
+# --- S5: log_forecast echoes the full locked record so the caller can confirm the immutable write ---
+def test_log_forecast_returns_full_record(store):
+    rec = store.log_forecast("c", "will it rain?", 0.7, "criteria", "3mo", "analyst_confirmed", "because")
+    assert rec.probability == 0.7
+    assert rec.question == "will it rain?"
+    assert rec.resolution_criteria == "criteria"
+    assert rec.horizon == "3mo"
+    assert rec.rationale == "because"
+    assert rec.outcome is None  # unresolved
+    assert rec.row_hash  # chain hash present
+
+
+# --- S2: created_ts is now covered by the row hash, so tampering with it is detected ---
+def test_created_ts_tamper_detected(store, tmp_path):
+    ref = _log(store)
+    assert store.verify_chain().ok
+    raw = sqlite3.connect(str(tmp_path / "cal.db"))
+    raw.execute("UPDATE forecasts SET created_ts = created_ts + 1000 WHERE forecast_id=?", (ref.forecast_id,))
+    raw.commit()
+    raw.close()
+    status = store.verify_chain()
+    assert status.ok is False and status.mismatch.table == "forecasts"
+
+
+# --- S3: a shared DB file must not leak or expose another analyst's forecasts ---
+def test_cross_analyst_access_denied(tmp_path):
+    db = str(tmp_path / "shared.db")
+    a = CalibrationStore(db, analyst_id="alice")
+    try:
+        ref = a.log_forecast("c", "q", 0.5, "def", "3mo", "analyst_confirmed")
+    finally:
+        a.close()  # release the single-writer lock before bob opens
+    b = CalibrationStore(db, analyst_id="bob")
+    try:
+        with pytest.raises(ForecastError, match="unknown forecast_id"):
+            b.get_forecast(ref.forecast_id)
+        assert b.list_forecasts().items == []
+        assert b.get_calibration_report().n == 0
+    finally:
+        b.close()
+
+
+# --- S3: only one process may hold a file-backed DB open (single-writer local design) ---
+def test_second_writer_refused(tmp_path):
+    db = str(tmp_path / "locked.db")
+    a = CalibrationStore(db, analyst_id="alice")
+    try:
+        with pytest.raises(ForecastError, match="already open"):
+            CalibrationStore(db, analyst_id="bob")
+    finally:
+        a.close()
+    c = CalibrationStore(db, analyst_id="carol")  # lock released -> a new writer can open
+    c.close()
+
+
+# --- N5: a corrupt stored locked_at fails the resolve loud, not silently skipping anti-backdating ---
+def test_corrupt_locked_at_blocks_resolve(store, tmp_path):
+    ref = _log(store)
+    raw = sqlite3.connect(str(tmp_path / "cal.db"))
+    raw.execute("UPDATE forecasts SET locked_at='garbage' WHERE forecast_id=?", (ref.forecast_id,))
+    raw.commit()
+    raw.close()
+    with pytest.raises(ForecastError, match="corrupt lock timestamp"):
+        store.resolve_forecast(ref.forecast_id, True, "2030-01-01")

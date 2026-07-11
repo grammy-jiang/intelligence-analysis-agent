@@ -21,17 +21,29 @@ class ForecastRecord(BaseModel):
     forecast_id: str
     case_id: str
     question: str
-    probability: float
+    probability: float = Field(
+        description="Analyst's judgment: P(question resolves YES, i.e. the resolution outcome is True), in [0,1]."
+    )
     resolution_criteria: str
     horizon: str
     analyst_id: str
     judgment_source: JudgmentSource
     rationale: str = ""
     locked_at: str
-    outcome: bool | None = None
+    outcome: bool | None = Field(
+        default=None, description="Effective resolved outcome (latest resolution); True=YES. None if unresolved."
+    )
     resolved_at: str | None = None
     voided: bool = False
-    row_hash: str
+    was_corrected: bool = Field(
+        default=False, description="True if the outcome was superseded by at least one correction."
+    )
+    correction_count: int = Field(
+        default=0, description="Number of correction resolutions appended after the first resolution."
+    )
+    row_hash: str = Field(
+        description="Internal chain-integrity hash of the forecast row — NOT a judgment or score."
+    )
 
 
 class ForecastList(BaseModel):
@@ -48,10 +60,19 @@ class Bucket(BaseModel):
 class CalibrationReport(BaseModel):
     n: int
     n_voided: int
+    n_corrected: int = Field(
+        default=0, description="Count of scored forecasts whose outcome was later corrected (audit signal)."
+    )
     brier: float | None
     buckets: list[Bucket]
-    resolution_component: float | None  # Murphy resolution: higher = better discrimination
-    reliability_component: float | None  # Murphy reliability: lower = better calibrated
+    resolution_component: float | None = Field(
+        default=None,
+        description="Murphy resolution component; higher = better discrimination.",
+    )
+    reliability_component: float | None = Field(
+        default=None,
+        description="Murphy reliability component; lower = better calibrated.",
+    )
     note: str
 
 

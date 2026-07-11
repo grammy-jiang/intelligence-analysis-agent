@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -29,6 +30,13 @@ from .models import (
 
 _TABLES = ("matrices", "hypotheses", "cells")
 
+# SF7: the store enforces these domains itself — not only the tool-boundary pydantic Literal — so a
+# direct store caller (tests, scripts, another transport) cannot write out-of-domain values into the
+# hash-chained payload.
+_CONSISTENCY = ("C", "I", "N/A")
+_STRENGTH = ("strong", "weak")
+_JUDGMENT_SOURCE = ("analyst_confirmed", "model_draft")
+
 
 class ACHError(Exception):
     """Business-rule violation; the server wraps this as a FastMCP ToolError."""
@@ -47,7 +55,11 @@ class ACHStore:
         self._clock = clock
         self.analyst_id = analyst_id or os.environ.get("ACH_ANALYST_ID", "local-analyst")
         self.manifest_path = db_path + ".manifest.jsonl" if db_path != ":memory:" else None
-        self._conn = sqlite3.connect(db_path)
+        # M6: check_same_thread=False mirrors StalenessStore/EvidenceStore — FastMCP may dispatch a
+        # tool body on a worker thread; the sqlite3 default (True) would raise ProgrammingError. All
+        # writes are serialized through self._write_lock to preserve single-writer discipline.
+        self._write_lock = threading.Lock()
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(
@@ -69,12 +81,29 @@ class ACHStore:
             """
         )
         self._conn.commit()
+        self._restrict_perms()
+
+    def _restrict_perms(self) -> None:
+        # MF5/N8: the unkeyed SHA-256 chain's tamper-evidence rests on OS file isolation — keep the
+        # DB (and its WAL sidecars + manifest) private to the owning user so no other local principal
+        # can rewrite-and-rehash the chain. Best-effort: a managed FS may forbid chmod.
+        if self.db_path == ":memory:":
+            return
+        for path in (self.db_path, self.db_path + "-wal", self.db_path + "-shm", self.manifest_path):
+            if path and os.path.exists(path):
+                try:
+                    os.chmod(path, 0o600)
+                except OSError:
+                    pass
 
     def close(self) -> None:
         self._conn.close()
 
     def _head(self, table: str) -> str:
-        assert table in _TABLES
+        # S2: explicit guard (not assert — assertions are stripped under python -O, which would
+        # re-open f-string identifier interpolation below).
+        if table not in _TABLES:
+            raise ValueError(f"unknown table: {table}")
         r = self._conn.execute(
             f"SELECT row_hash FROM {table} ORDER BY seq DESC LIMIT 1"  # noqa: S608 - internal literal
         ).fetchone()
@@ -83,28 +112,64 @@ class ACHStore:
     def _append_manifest(self, table: str, head: str) -> None:
         if not self.manifest_path:
             return
-        with open(self.manifest_path, "a", encoding="utf-8") as fh:
+        # MF5/N8: create the manifest private (0o600) — it anchors the tamper-evidence reconciliation,
+        # so a co-resident writer must not be able to read/rewrite it. O_CREAT mode applies on creation.
+        fd = os.open(self.manifest_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
             fh.write(json.dumps({"table": table, "head": head, "at": now_iso()}) + "\n")
+
+    def _manifest_state(self) -> dict[str, tuple[str, int]] | None:
+        """Last recorded head + append-count per table from the manifest (None if no manifest file).
+
+        M2: verify_chain reconciles the live tables against this so trailing-row truncation — which
+        leaves a self-consistent but shorter chain — is detected instead of silently reporting ok.
+        """
+        if not self.manifest_path:
+            return None
+        state: dict[str, tuple[str, int]] = {}
+        try:
+            with open(self.manifest_path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    _, count = state.get(rec["table"], (GENESIS, 0))
+                    state[rec["table"]] = (rec["head"], count + 1)
+        except FileNotFoundError:
+            return {}
+        return state
 
     # ---- matrix / hypotheses ----------------------------------------------
     def create_matrix(self, case_id: str, hypotheses: list[str]) -> MatrixRef:
+        if not case_id or not case_id.strip():  # SF9: a blank case_id groups matrices outside any real case
+            raise ACHError("create_matrix requires a non-empty case_id.")
         if not hypotheses:
             raise ACHError("create_matrix requires a non-empty hypothesis set.")
         matrix_id = uuid.uuid4().hex
         payload = {"matrix_id": matrix_id, "case_id": case_id}
         prev = self._head("matrices")
         rh = row_hash(prev, payload)
-        self._conn.execute(
-            "INSERT INTO matrices(matrix_id, case_id, prev_hash, row_hash) VALUES(?,?,?,?)",
-            (matrix_id, case_id, prev, rh),
-        )
-        self._append_manifest("matrices", rh)
-        for text in hypotheses:
-            self._insert_hypothesis(matrix_id, text)
-        self._conn.commit()
+        # M3: single transaction (commit or rollback atomically); manifest is written only AFTER the
+        # commit succeeds, so it can never record a row that was not durably committed.
+        appends: list[tuple[str, str]] = [("matrices", rh)]
+        with self._write_lock:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO matrices(matrix_id, case_id, prev_hash, row_hash) VALUES(?,?,?,?)",
+                    (matrix_id, case_id, prev, rh),
+                )
+                for text in hypotheses:
+                    _, h_rh = self._insert_hypothesis(matrix_id, text)
+                    appends.append(("hypotheses", h_rh))
+            for table, head in appends:
+                self._append_manifest(table, head)
         return self.get_matrix_ref(matrix_id)
 
-    def _insert_hypothesis(self, matrix_id: str, text: str) -> str:
+    def _insert_hypothesis(self, matrix_id: str, text: str) -> tuple[str, str]:
+        """Insert one hypothesis row (no commit / no manifest — the caller owns the transaction)."""
+        if not text or not text.strip():  # S3: reject empty/whitespace hypothesis text
+            raise ACHError("hypothesis text must be non-empty.")
         hid = "h_" + uuid.uuid4().hex[:12]
         added_at = now_iso()
         payload = {"hypothesis_id": hid, "matrix_id": matrix_id, "text": text, "added_at": added_at}
@@ -115,13 +180,14 @@ class ACHStore:
             "VALUES(?,?,?,?,?,?)",
             (hid, matrix_id, text, added_at, prev, rh),
         )
-        self._append_manifest("hypotheses", rh)
-        return hid
+        return hid, rh
 
     def add_hypothesis(self, matrix_id: str, hypothesis: str) -> MatrixRef:
         self._matrix_row(matrix_id)
-        self._insert_hypothesis(matrix_id, hypothesis)
-        self._conn.commit()
+        with self._write_lock:
+            with self._conn:
+                _, rh = self._insert_hypothesis(matrix_id, hypothesis)
+            self._append_manifest("hypotheses", rh)  # M3: after commit
         return self.get_matrix_ref(matrix_id)
 
     def _matrix_row(self, matrix_id: str) -> sqlite3.Row:
@@ -149,40 +215,78 @@ class ACHStore:
         ).fetchone()
 
     def rate_cell(
-        self, matrix_id, evidence_id, hypothesis_id, consistency, strength, judgment_source, reason=""
+        self,
+        matrix_id: str,
+        evidence_id: str,
+        hypothesis_id: str,
+        consistency: str,
+        strength: str,
+        judgment_source: str,
+        reason: str = "",
     ) -> CellRecord:
+        if not evidence_id or not evidence_id.strip():  # S3: reject blank evidence_id
+            raise ACHError("evidence_id must be non-empty.")
+        # SF7: enforce the value domains in the store, independent of the tool-boundary pydantic Literal.
+        if consistency not in _CONSISTENCY:
+            raise ACHError(f"consistency must be one of {_CONSISTENCY}, got {consistency!r}.")
+        if strength not in _STRENGTH:
+            raise ACHError(f"strength must be one of {_STRENGTH}, got {strength!r}.")
+        if judgment_source not in _JUDGMENT_SOURCE:
+            raise ACHError(f"judgment_source must be one of {_JUDGMENT_SOURCE}, got {judgment_source!r}.")
         self._matrix_row(matrix_id)
         hyp = self._conn.execute(
             "SELECT 1 FROM hypotheses WHERE hypothesis_id=? AND matrix_id=?", (hypothesis_id, matrix_id)
         ).fetchone()
         if not hyp:
             raise ACHError(f"unknown hypothesis_id for this matrix: {hypothesis_id}")
+        # M4: `analyst_confirmed` is not a claim the caller can self-attest from thin air. A cell may
+        # only carry it when the evidence it rates already holds an out-of-band `analyst_confirmed`
+        # grade signal (written by evidence-ledger, a separate actor) — the "grade_signals-style
+        # cross-store signal" that ties confirmation to a human action rather than the calling agent.
+        # An agent's own draft must be recorded as `model_draft` (and is blocked by score_matrix until
+        # re-rated). Residual: the per-evidence signal does not bind a *specific* rating, so a fully
+        # separate per-cell confirm tool would be a stronger control — tracked, not closed here.
+        if (
+            judgment_source == "analyst_confirmed"
+            and self.staleness.latest_grade_source(evidence_id) != "analyst_confirmed"
+        ):
+            raise ACHError(
+                "cannot record an analyst_confirmed cell rating for evidence that is not itself "
+                "analyst_confirmed-graded in evidence-ledger (out-of-band confirmation required): "
+                "grade the evidence first, or record this rating as model_draft."
+            )
         prior = self._effective_cell(matrix_id, evidence_id, hypothesis_id)
         if prior is not None and not reason.strip():
             raise ACHError("reason is required when superseding an existing cell rating.")
         rated_at = now_iso()
         rated_ts = self._clock()
+        # M1: rated_ts is in the hashed payload — it drives _cell_stale and the score_matrix staleness
+        # blocker, so a raw UPDATE of it must break verify_chain, not sail through with ok=True.
         payload = {
             "matrix_id": matrix_id, "evidence_id": evidence_id, "hypothesis_id": hypothesis_id,
             "consistency": consistency, "strength": strength, "analyst_id": self.analyst_id,
             "judgment_source": judgment_source, "reason": reason, "rated_at": rated_at,
+            "rated_ts": rated_ts,
         }
         prev = self._head("cells")
         rh = row_hash(prev, payload)
-        self._conn.execute(
-            "INSERT INTO cells(matrix_id, evidence_id, hypothesis_id, consistency, strength, analyst_id, "
-            "judgment_source, reason, rated_at, rated_ts, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-            (
-                matrix_id, evidence_id, hypothesis_id, consistency, strength, self.analyst_id,
-                judgment_source, reason, rated_at, rated_ts, prev, rh,
-            ),
-        )
-        self._conn.commit()
-        self._append_manifest("cells", rh)
+        with self._write_lock:
+            with self._conn:  # M3: atomic commit-or-rollback
+                self._conn.execute(
+                    "INSERT INTO cells(matrix_id, evidence_id, hypothesis_id, consistency, strength, analyst_id, "
+                    "judgment_source, reason, rated_at, rated_ts, prev_hash, row_hash) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                    (
+                        matrix_id, evidence_id, hypothesis_id, consistency, strength, self.analyst_id,
+                        judgment_source, reason, rated_at, rated_ts, prev, rh,
+                    ),
+                )
+            self._append_manifest("cells", rh)  # after commit
         return CellRecord(
             matrix_id=matrix_id, evidence_id=evidence_id, hypothesis_id=hypothesis_id, consistency=consistency,
             strength=strength, judgment_source=judgment_source, reason=reason, rated_at=rated_at,
-            superseded=False, row_hash=rh,
+            # M5: report the truth — a rating that supersedes a prior effective cell is a correction.
+            superseded=prior is not None, row_hash=rh,
         )
 
     def _effective_cells(self, matrix_id: str) -> list[sqlite3.Row]:
@@ -216,15 +320,42 @@ class ACHStore:
     def score_matrix(self, matrix_id: str) -> Ranking:
         self._matrix_row(matrix_id)
         eff = self._effective_cells(matrix_id)
+        hyps = self._hypotheses(matrix_id)
         blockers: list[str] = []
+
+        # MF1: a hypothesis with an absent cell must never be ranked. An unrated (evidence × hypothesis)
+        # pair — e.g. a hypothesis just added via add_hypothesis before existing evidence was re-rated
+        # against it — would otherwise score 0/0 and win the least-inconsistency sort over every
+        # genuinely-evaluated hypothesis (the exact ACH failure this server exists to prevent). Require
+        # full coverage: every evidence item in the matrix must be rated against every hypothesis.
+        evidence_ids = sorted({c["evidence_id"] for c in eff})
+        if not evidence_ids:
+            raise ACHError("cannot score — no cells have been rated yet.")
+        rated_pairs = {(c["evidence_id"], c["hypothesis_id"]) for c in eff}
+        for h in hyps:
+            for ev in evidence_ids:
+                if (ev, h.hypothesis_id) not in rated_pairs:
+                    blockers.append(
+                        f"({ev}, {h.hypothesis_id}) not rated: every evidence item must be rated against "
+                        "every hypothesis before scoring (coverage gap)"
+                    )
+
         for c in eff:
             # collect-then-grade (decision #8): the EVIDENCE must carry an effective analyst_confirmed grade
             # in evidence-ledger before any of its cells may be scored — an ingested/ungraded artifact can never
             # reach scored output regardless of the cell rating's own judgment_source.
-            if self.staleness.latest_grade_source(c["evidence_id"]) != "analyst_confirmed":
+            grade_src = self.staleness.latest_grade_source(c["evidence_id"])
+            if grade_src != "analyst_confirmed":
+                # S4: distinguish "never registered (likely a typo)" from "registered but not
+                # analyst_confirmed" so the remediation is correct for each case.
+                detail = (
+                    "no grade signal at all — check the evidence_id for a typo and register/grade it "
+                    "in evidence-ledger"
+                    if grade_src is None
+                    else f"currently graded '{grade_src}' — analyst_confirm it in evidence-ledger"
+                )
                 blockers.append(
-                    f"({c['evidence_id']}, {c['hypothesis_id']}) evidence not analyst_confirmed-graded: "
-                    "grade it in evidence-ledger first"
+                    f"({c['evidence_id']}, {c['hypothesis_id']}) evidence not analyst_confirmed-graded: {detail}"
                 )
             elif self._cell_stale(c):
                 blockers.append(f"({c['evidence_id']}, {c['hypothesis_id']}) stale: re-rate after grade change")
@@ -233,7 +364,6 @@ class ACHStore:
         if blockers:
             raise ACHError("cannot score — resolve these cells first: " + "; ".join(blockers))
 
-        hyps = self._hypotheses(matrix_id)
         strong = {h.hypothesis_id: 0 for h in hyps}
         weak = {h.hypothesis_id: 0 for h in hyps}
         by_evidence: dict[str, list[str]] = {}
@@ -256,7 +386,10 @@ class ACHStore:
 
     def list_matrices(self, case_id: str, limit: int = 100, cursor: str | None = None) -> MatrixList:
         limit = max(1, min(limit, 1000))
-        after = int(cursor) if cursor else 0
+        try:  # S1: a malformed cursor is a caller error (ACHError), not an uncaught ValueError
+            after = int(cursor) if cursor else 0
+        except (TypeError, ValueError) as e:
+            raise ACHError(f"invalid cursor: {cursor!r}") from e
         rows = self._conn.execute(
             "SELECT matrix_id, seq FROM matrices WHERE case_id=? AND seq>? ORDER BY seq ASC LIMIT ?",
             (case_id, after, limit + 1),
@@ -266,11 +399,16 @@ class ACHStore:
         return MatrixList(items=items, next_cursor=next_cursor)
 
     # ---- integrity ---------------------------------------------------------
-    def verify_chain(self, case_id: str | None = None) -> ChainStatus:
+    def verify_chain(self) -> ChainStatus:
+        # MF4: integrity is table-wide and ALWAYS GLOBAL — there is no per-case scope. The prior
+        # `case_id` param was echoed into `scope` but never filtered any row (the whole DB was always
+        # walked), advertising a filter that did nothing; siblings dropped it for the same reason.
         heads: dict[str, str] = {}
+        counts: dict[str, int] = {}
         verified = 0
         for table in _TABLES:
             prev = GENESIS
+            count = 0
             rows = self._conn.execute(
                 f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
             ).fetchall()
@@ -279,17 +417,37 @@ class ACHStore:
                 expected = row_hash(prev, payload)
                 if expected != r["row_hash"] or r["prev_hash"] != prev:
                     return ChainStatus(
-                        server="ach-engine", scope=case_id or "all", ok=False, head_hash=heads,
+                        server="ach-engine", scope="all", ok=False, head_hash=heads,
                         rows_verified=verified,
                         mismatch=ChainMismatch(
                             table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
                         ),
                     )
                 prev = r["row_hash"]
+                count += 1
                 verified += 1
             heads[table] = prev
+            counts[table] = count
+
+        # M2: reconcile the live tables against the manifest. Truncating the last N rows leaves a
+        # self-consistent shorter chain; without this check verify_chain would report ok=True with a
+        # lower rows_verified. The manifest's last head + append-count per table must match the tables.
+        manifest = self._manifest_state()
+        if manifest is not None:
+            for table in _TABLES:
+                m_head, m_count = manifest.get(table, (GENESIS, 0))
+                if m_head != heads[table] or m_count != counts[table]:
+                    return ChainStatus(
+                        server="ach-engine", scope="all", ok=False, head_hash=heads,
+                        rows_verified=verified,
+                        mismatch=ChainMismatch(
+                            table=table, row_id="manifest",
+                            expected_hash=f"{m_head} (manifest: {m_count} rows)",
+                            got_hash=f"{heads[table]} (tables: {counts[table]} rows)",
+                        ),
+                    )
         return ChainStatus(
-            server="ach-engine", scope=case_id or "all", ok=True, head_hash=heads, rows_verified=verified
+            server="ach-engine", scope="all", ok=True, head_hash=heads, rows_verified=verified
         )
 
     def _payload_for(self, table: str, r: sqlite3.Row) -> dict:
@@ -304,4 +462,5 @@ class ACHStore:
             "matrix_id": r["matrix_id"], "evidence_id": r["evidence_id"], "hypothesis_id": r["hypothesis_id"],
             "consistency": r["consistency"], "strength": r["strength"], "analyst_id": r["analyst_id"],
             "judgment_source": r["judgment_source"], "reason": r["reason"], "rated_at": r["rated_at"],
+            "rated_ts": r["rated_ts"],  # M1: rated_ts feeds staleness logic, so it must be in the hash
         }
