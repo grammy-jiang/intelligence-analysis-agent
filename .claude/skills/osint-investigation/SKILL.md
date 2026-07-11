@@ -1,6 +1,6 @@
 ---
 name: osint-investigation
-description: "Runs an open-source (OSINT) investigation to collect and verify evidence for an analytic question — search, fetch through the egress guard, hash/EXIF for archival, archive each item into the evidence-ledger as an UNTRUSTED ingested proposal, then verify geolocation/chronolocation as human-confirmed annotations, and hand off to grading — never grading the item here. Invoke when a question needs external open-source collection. Not for classified sources, and not a fact-asserting tool — every result is a candidate for human confirmation."
+description: "Runs an open-source (OSINT) investigation to collect and verify evidence for an analytic question — search, fetch through the egress guard, hash/EXIF for archival, archive each item into the evidence-ledger as an UNTRUSTED ingested proposal, then verify geolocation/chronolocation as candidate annotations (confirmed downstream at the human gate), and hand off to grading — never grading the item here. Invoke when a question needs external open-source collection. Not for classified sources, and not a fact-asserting tool — every result is a candidate for human confirmation."
 allowed-tools: Task, Skill, osint-toolkit:search, osint-toolkit:fetch, osint-toolkit:compute_hash, osint-toolkit:extract_exif, osint-toolkit:reverse_image_search, osint-toolkit:get_map_tile, osint-toolkit:propose_to_ledger, osint-toolkit:verify_chain
 ---
 
@@ -94,7 +94,7 @@ so treat it as non-negotiable, not advisory. See invariant 5 for the standing fi
    near-miss URL (not in the search provenance set) is **gated**: apply the confirmation gate, then call
    `osint-toolkit:fetch(url, confirmed=True)`. The SSRF guard + audit run before anything leaves.
 4. **Archive integrity** *(Heuer, ACH Step 2)*: `osint-toolkit:compute_hash` (content hash) and, for images,
-   `osint-toolkit:extract_exif`. Both are **candidate** — verify a detected type/location in step 5, never
+   `osint-toolkit:extract_exif`. Both are **candidate** — verify a detected type/location in step 6, never
    assume it.
 5. **Archive as an ingested proposal** (`osint-toolkit:propose_to_ledger`) — `source_channel='ingested'`,
    ungraded, hash-anchored, with the REQUIRED `pii` flag *(invariant 1; FM 2-22.3 C027)*. Set **`pii=true`**
@@ -104,9 +104,9 @@ so treat it as non-negotiable, not advisory. See invariant 5 for the standing fi
    annotation, never a judgment. Returns the ledger item id used by step 6. Then call
    `osint-toolkit:verify_chain(item_id)` to confirm the hash chain is intact before returning the id — on
    failure, flag it and abort the item rather than carrying an unverifiable record forward.
-6. **Verify against the ledger item, human-confirmed** *(Heuer, ACH Step 2; blueprint decision #10)*.
+6. **Verify against the ledger item — candidate status, confirmed downstream** *(Heuer, ACH Step 2; blueprint decision #10)*.
    Geolocation / chronolocation / cross-source corroboration is *analysis*, not a tool result — it produces a
-   per-claim **`verification` status** on the ledger item (distinct from the per-item A–F/1–6 **grade**, which
+   per-claim **`verification` status** for the ledger item (distinct from the per-item A–F/1–6 **grade**, which
    is step 7's job). Tools available here, each producing candidates:
    - `osint-toolkit:get_map_tile(lat, lon, zoom, connector)` — pull a candidate tile to compare against an
      image for geolocation.
@@ -115,17 +115,27 @@ so treat it as non-negotiable, not advisory. See invariant 5 for the standing fi
      confirmation gate (disclosing the likeness will leave the environment) and only then call it with
      `confirmed=True`.
 
-   For a large verification fan-out, delegate to a `Task` subagent (no dedicated geo/chrono verifier exists in
-   the reviewer roster) — but it must run with **no egress tools**: withhold `WebFetch`, `Bash`, and any
-   network-touching tool so it cannot bypass the sole-egress surface (invariant 4). It gets no ledger-read or
-   `osint-toolkit:*` grant either; instead pass it, inline, the one ledger item's already-fetched content +
-   the verification question — so it reasons over material this skill already gated in, and needs neither
-   network nor store access. If verification turns out to require a *new* egress (another fetch, a map tile,
-   a reverse-image upload), the subagent must **not** perform it — it returns that need, and the main thread
-   issues the call through this skill's gated `osint-toolkit:*` path (confirmation gate + `confirmed=True`).
-   Require the return payload to be exactly `{verification, confidence, rationale}` and let only that re-enter
-   the main thread — keep raw, untrusted material out of the main context. Write the returned `verification`
-   back as an annotation on the ledger item.
+   For a large verification fan-out, delegate to a `Task` subagent. **Enforcement boundary — be honest about
+   it:** a calling skill's prose *cannot* strip a `Task` / `general-purpose` subagent's tool palette (that
+   palette is fixed by the subagent's own definition), so a sentence here telling it to "withhold `WebFetch` /
+   `Bash`" is **not** a runtime control — it is the same known-enforcement-gap class the file already discloses
+   for invariant 5, not effective enforcement of the sole-egress surface (invariant 4). What *does* bound the
+   blast radius, and is real: grant the subagent **no** ledger-read and **no** `osint-toolkit:*`, and pass it,
+   inline, only the one ledger item's already-fetched content + the verification question — so it has nothing to
+   *use* even if its definition holds a network tool; and require the return payload to be exactly
+   `{verification, confidence, rationale}`, letting only that re-enter the main thread (keep raw, untrusted
+   material out of the main context). **Standing fix (the actual enforcement):** define a dedicated
+   `geo-chrono-verifier` subagent with an explicit restricted `tools:` allowlist (verification reasoning only;
+   no `WebFetch` / `Bash` / network tool) and delegate to *that* by name. If verification turns out to require a
+   *new* egress (another fetch, a map tile, a reverse-image upload), the subagent must **not** perform it — it
+   returns that need, and the main thread issues the call through this skill's gated `osint-toolkit:*` path
+   (confirmation gate + `confirmed=True`). Carry the returned `verification` as a **candidate** status on the
+   `EvidenceItem` handed to grading (step 7) and, later, the Assessment — it is confirmed **downstream** at the
+   report+approve human gate (structured-analysis Step 10; Kent C020, Heuer C167), not here.
+   **Wiring gap (owner-decide):** no `osint-toolkit` or `evidence-ledger` tool writes a verification annotation
+   back onto the stored ledger item, so the status travels *on the EvidenceItem*, not as a ledger write.
+   Persisting it on the ledger item would need a new `annotate_verification`-style tool (with a
+   `confirmed` / `gate_ack` param mirroring the fetch/upload gates) — flagged here, not invented.
 
    *Outer loop:* steps 2–6 run **per candidate item**. Repeat them for each URL/artifact worth pursuing; stop
    collecting when the evidentiary need for the question is met, independent corroboration is sufficient, or a
@@ -145,8 +155,9 @@ so treat it as non-negotiable, not advisory. See invariant 5 for the standing fi
 
 - Inputs: the question + what is collectible; the `case_id`; any confirmed high-risk tasking.
 - Output: ingested, provenance-tracked `EvidenceItem[]` in the evidence-ledger — each hash-anchored, with a
-  human-confirmed `verification` status and the **A–F/1–6 grade `source-evaluation` assigned in step 7**
-  (never a self-assigned grade, never a raw tool assertion). In degraded mode (`OSINT_LIVE=0`), an empty
+  **candidate** `verification` status (confirmed downstream at the structured-analysis Step-10 human gate; carried
+  on the EvidenceItem, since no ledger annotate-verification tool exists — see step 6) and the **A–F/1–6 grade
+  `source-evaluation` assigned in step 7** (never a self-assigned grade, never a raw tool assertion). In degraded mode (`OSINT_LIVE=0`), an empty
   `EvidenceItem[]` with `live_collection=false`.
 - **Hand-back:** return the graded `EvidenceItem[]` to **structured-analysis Step 3/4** so the grades feed the
   ACH matrix build.

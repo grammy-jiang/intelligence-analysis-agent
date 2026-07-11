@@ -62,13 +62,18 @@ _MAX_ITEM = 100_000
 _MAX_ID = 512
 _MAX_TEXT = 10_000
 _MAX_OBSERVABLES = 256
+# MF2: the host-gate opt-in is an explicit ALLOW-LIST of truthy tokens, not env-var presence. os.environ.get
+# returns a non-empty string for EVIDENCE_ALLOW_UNREDACT=0 / =false (an operator's intent to DISABLE), which is
+# truthy in Python — so a presence check would grant life-safety unredaction on a value meant to deny it.
+_UNREDACT_TRUTHY = {"1", "true", "yes", "on"}
 
 
 def _require_unredact_permitted(redact_pii: bool) -> None:
     """MF2: unredaction (redact_pii=False) exposes source-identifying PII — life-safety. A same-call
-    boolean from the caller is not enough; the HOST must opt in out-of-band by setting
-    EVIDENCE_ALLOW_UNREDACT. Default is deny."""
-    if not redact_pii and not os.environ.get("EVIDENCE_ALLOW_UNREDACT"):
+    boolean from the caller is not enough; the HOST must opt in out-of-band by setting EVIDENCE_ALLOW_UNREDACT
+    to an explicit truthy value (1/true/yes/on). Any other value — including '0'/'false'/'' — denies."""
+    allowed = os.environ.get("EVIDENCE_ALLOW_UNREDACT", "").strip().lower() in _UNREDACT_TRUTHY
+    if not redact_pii and not allowed:
         raise ToolError(
             "unredaction refused: reading PII items unredacted requires host approval "
             "(EVIDENCE_ALLOW_UNREDACT is not set). Source identity is life-safety."
@@ -167,7 +172,9 @@ def update_grade(
 
 
 @mcp.tool
-def get_evidence(evidence_id: str, redact_pii: bool = True) -> EvidenceRecord:
+def get_evidence(
+    evidence_id: Annotated[str, Field(max_length=_MAX_ID)], redact_pii: bool = True
+) -> EvidenceRecord:  # SF1: read-path IDs carry the same _MAX_ID cap as the write tools
     """Read one evidence item + its grade history. `pii` items return item='REDACTED' unless redact_pii=False,
     which is host-gated (requires EVIDENCE_ALLOW_UNREDACT — source identity is life-safety)."""
     _require_unredact_permitted(redact_pii)
@@ -179,7 +186,10 @@ def get_evidence(evidence_id: str, redact_pii: bool = True) -> EvidenceRecord:
 
 @mcp.tool
 def list_evidence(
-    case_id: str, redact_pii: bool = True, limit: int = 100, cursor: str | None = None
+    case_id: Annotated[str, Field(max_length=_MAX_ID)],  # SF1: same _MAX_ID cap as the write tools
+    redact_pii: bool = True,
+    limit: int = 100,
+    cursor: str | None = None,
 ) -> EvidenceList:
     """Read-back for a case with pagination. Unredacted reads (redact_pii=False) are host-gated
     (EVIDENCE_ALLOW_UNREDACT)."""
@@ -191,7 +201,9 @@ def list_evidence(
 
 
 @mcp.tool
-def get_source_history(source_id: str, redact_pii: bool = True) -> SourceHistory:
+def get_source_history(
+    source_id: Annotated[str, Field(max_length=_MAX_ID)], redact_pii: bool = True
+) -> SourceHistory:  # SF1: read-path IDs carry the same _MAX_ID cap as the write tools
     """CROSS-CASE view (folded source-trust-registry): the ordered sequence of this source's
     `analyst_confirmed` grades + the direction of the most recent change. A transparent RECORD, not a
     synthesized trust score; model_draft grades are excluded (and counted). Unredacted reads

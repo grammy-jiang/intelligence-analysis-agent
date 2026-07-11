@@ -1,7 +1,7 @@
 ---
 name: structured-analysis
 description: "Run the structured analytic-tradecraft workflow on an intelligence or analytic question — frame it, enumerate ALL competing hypotheses, weigh evidence in an ACH matrix ranked by disconfirmation, get independent bias / method / calibration critique from reviewer subagents, then a human-approved calibrated judgment. Delegates grading to source-evaluation, forecasting to calibrated-forecasting, and critique to the reviewer subagents. Invoke when analyzing a question under uncertainty where being wrong is costly and hidden assumptions, bias, or overconfidence are real risks — not for quick factual lookups."
-allowed-tools: Task, Skill, evidence-ledger:add_evidence, evidence-ledger:grade_evidence, ach-engine:create_matrix, ach-engine:rate_cell, ach-engine:score_matrix, calibration-tracker:log_forecast
+allowed-tools: Task, Skill(source-evaluation), Skill(osint-investigation), Skill(calibrated-forecasting), evidence-ledger:add_evidence, evidence-ledger:grade_evidence, ach-engine:create_matrix, ach-engine:rate_cell, ach-engine:score_matrix, calibration-tracker:get_calibration_report, calibration-tracker:log_forecast
 ---
 
 # Structured Analysis
@@ -16,8 +16,9 @@ structures and challenges the reasoning; the human analyst owns the judgment (Ke
 
 **Current phase.** The case is drafted in-context as a running prose **case workspace**, and three MCP
 servers persist the load-bearing state: **`evidence-ledger`** (per-case evidence + grades, Step 3),
-**`ach-engine`** (the matrix + least-inconsistency scoring, Steps 4/6), and **`calibration-tracker`** (the
-committed forecast, Steps 9/10a). Still deferred — where a step would use one it says so and proceeds
+**`ach-engine`** (the matrix + least-inconsistency scoring, Steps 4/6), and **`calibration-tracker`** (Step 9
+reads the analyst's own resolved track record via `get_calibration_report`, Step 10a logs the approved forecast
+via `log_forecast`). Still deferred — where a step would use one it says so and proceeds
 without: the **`source-trust-registry`** cross-case source-credibility store (Step 3 grades from present
 evidence alone), **Brier scoring** a resolved forecast (Step 12), and **live OSINT collection**
 (`osint-toolkit` runs read-only, `OSINT_LIVE=0`).
@@ -150,9 +151,10 @@ deferred plumbing; here the analyst is the escalation target.)*
 State the judgment as an explicit **probability number**, not "likely/probable" alone. Give the leading
 hypothesis and the residual probability on the alternatives — three-to-one odds still leave a one-in-four.
 Note confidence (how much evidence, how diagnostic) separately from the probability, and record any dissent.
-**First read the learning leg** *(pipeline row 9)*: query the `calibration-tracker` MCP for the
-analyst/model's own resolved track record on similar questions *(Tetlock C239; EPJ C005)* and adjust the
-stated confidence for any known bias — e.g. temper it if the track record shows overconfidence. If the store
+**First read the learning leg** *(pipeline row 9)*: call `calibration-tracker:get_calibration_report` for the
+analyst/model's own resolved track record — Brier score + calibration table — on similar questions *(Tetlock
+C239; EPJ C005)* and adjust the stated confidence for any known bias — e.g. temper it if the track record shows
+overconfidence. If the store
 holds no relevant history, say so and proceed from the base rate alone.
 **Use the `calibrated-forecasting` skill** to produce the number — outside view / base rate first,
 Fermi-decompose, adjust moderately, probability as a number with confidence stated separately, and an update

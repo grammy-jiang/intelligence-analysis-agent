@@ -219,3 +219,28 @@ def test_unredact_gate_denied_by_default(monkeypatch):  # MF2 (tool-layer host g
     server._require_unredact_permitted(redact_pii=True)  # redacted read always allowed
     monkeypatch.setenv("EVIDENCE_ALLOW_UNREDACT", "1")
     server._require_unredact_permitted(redact_pii=False)  # host opt-in permits it
+
+
+def test_unredact_gate_rejects_falsey_env_values(monkeypatch):  # MF-2 (truthiness, not env-var presence)
+    from mcp_servers.evidence_ledger import server
+
+    # A NON-EMPTY but falsey value (an operator setting =0 / =false to DISABLE unredaction) must still deny —
+    # the old `os.environ.get(...)` presence check granted it because any non-empty string is truthy.
+    for val in ("0", "false", "no", "off", " "):
+        monkeypatch.setenv("EVIDENCE_ALLOW_UNREDACT", val)
+        with pytest.raises(server.ToolError, match="unredaction refused"):
+            server._require_unredact_permitted(redact_pii=False)
+    # only an explicit truthy token opts in (case-insensitive)
+    for val in ("1", "true", "YES", "On"):
+        monkeypatch.setenv("EVIDENCE_ALLOW_UNREDACT", val)
+        server._require_unredact_permitted(redact_pii=False)
+
+
+def test_store_rejects_out_of_domain_judgment_source(ev):  # MF-1(a): store-layer domain guard
+    # The judgment_source domain is enforced at the store layer (defense-in-depth, mirrors ach-engine SF7) —
+    # a direct store caller cannot smuggle a third value into the hash-chained grade payload. (The core
+    # judgment-input boundary — a caller self-asserting analyst_confirmed — is by-design skill-enforced, not
+    # server-verifiable; this only closes the "any value at all" gap.)
+    ref = ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed")
+    with pytest.raises(EvidenceError, match="judgment_source"):
+        ev.grade_evidence(ref.evidence_id, "B", "2", "d", "totally_trusted")

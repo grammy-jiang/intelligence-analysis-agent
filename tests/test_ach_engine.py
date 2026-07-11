@@ -221,3 +221,45 @@ def test_verify_chain_scope_is_always_all(ach):
     # MF4: integrity is table-wide, never case-scoped; the dead case_id filter was removed.
     ach.create_matrix("c", ["H1"])
     assert ach.verify_chain().scope == "all"
+
+
+def test_head_read_runs_inside_write_lock(ach):
+    # M1 (TOCTOU): create_matrix / rate_cell previously read the chain head + computed row_hash BEFORE
+    # acquiring the write lock — two concurrent writers could hash against the same stale head and fork the
+    # append-only chain (verify_chain then reports a false tamper on ordinary concurrency). Prove every _head
+    # read during a write now happens while the lock is held (mirrors _insert_hypothesis).
+    class _TrackedLock:
+        def __init__(self, inner):
+            self._inner = inner
+            self.depth = 0
+
+        def acquire(self, *a, **k):
+            r = self._inner.acquire(*a, **k)
+            self.depth += 1
+            return r
+
+        def release(self):
+            self.depth -= 1
+            self._inner.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *a):
+            self.release()
+
+    ach._write_lock = _TrackedLock(ach._write_lock)
+    depths: list[int] = []
+    orig = ach._head
+
+    def probe(table):
+        depths.append(ach._write_lock.depth)
+        return orig(table)
+
+    ach._head = probe
+    ref = ach.create_matrix("c", ["H1", "H2"])  # _head("matrices") + _head("hypotheses") x2
+    hid = ref.hypotheses[0].hypothesis_id
+    ach.staleness.mark_graded("E1", "analyst_confirmed")
+    ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "analyst_confirmed")  # _head("cells")
+    assert depths and all(d > 0 for d in depths)  # every head read happened under the write lock

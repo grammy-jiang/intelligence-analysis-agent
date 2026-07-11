@@ -4,6 +4,7 @@ a field not listed is never logged, so a future secret-bearing field can't leak 
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import threading
 
@@ -27,6 +28,10 @@ class EgressAudit:
         # S15: serialize the head-read -> hash -> INSERT -> commit sequence so two concurrent egress calls
         # cannot read the same prev_hash and fork the append-only chain (mirrors EvidenceStore._write_lock).
         self._lock = threading.Lock()
+        # MF3: an external append-only manifest anchoring the chain head + row count, so trailing-row
+        # truncation (deleting an attempt->ok egress pair to erase an event) is detectable — a forward-only
+        # re-derivation cannot catch it. Mirrors ach-engine's manifest reconciliation.
+        self._manifest_path = db_path + ".manifest.jsonl" if db_path != ":memory:" else None
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(
@@ -44,6 +49,32 @@ class EgressAudit:
         r = self._conn.execute("SELECT row_hash FROM egress_log ORDER BY seq DESC LIMIT 1").fetchone()
         return r["row_hash"] if r else GENESIS
 
+    def _append_manifest(self, head: str) -> None:
+        # MF3: one manifest line per audit row (the chain head after that append), created 0600 — the
+        # unkeyed chain's tamper-evidence rests on OS file isolation of both the DB and this anchor.
+        if not self._manifest_path:
+            return
+        fd = os.open(self._manifest_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"head": head, "at": now_iso()}) + "\n")
+
+    def _manifest_state(self) -> tuple[str, int] | None:
+        """Last attested head + append-count from the manifest (None if this store has no manifest)."""
+        if not self._manifest_path:
+            return None
+        head, count = GENESIS, 0
+        try:
+            with open(self._manifest_path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    head = json.loads(line)["head"]
+                    count += 1
+        except FileNotFoundError:
+            return (GENESIS, 0)
+        return (head, count)
+
     def record(self, tool: str, fields: dict, resolved_ip: str, outcome: str) -> None:
         allow = LOGGABLE_FIELDS.get(tool, ())
         logged = {k: fields[k] for k in allow if k in fields}  # fail-closed allowlist
@@ -58,6 +89,7 @@ class EgressAudit:
                 (tool, json.dumps(logged, sort_keys=True), resolved_ip, outcome, payload["at"], prev, rh),
             )
             self._conn.commit()
+            self._append_manifest(rh)  # MF3: attest the new head AFTER the row durably commits
 
     def verify_chain(self) -> ChainStatus:
         prev = GENESIS
@@ -75,6 +107,21 @@ class EgressAudit:
                 )
             prev = r["row_hash"]
             verified += 1
+        # MF3: reconcile the live table against the manifest. Truncating trailing rows leaves a self-consistent
+        # shorter chain; the head + count anchor catches it (the residual both-truncated attack — dropping the
+        # matching manifest tail too — needs an off-host WORM anchor).
+        manifest = self._manifest_state()
+        if manifest is not None:
+            m_head, m_count = manifest
+            if m_head != prev or m_count != verified:
+                return ChainStatus(
+                    server="osint-egress-audit", scope="all", ok=False, head_hash={"egress_log": prev},
+                    rows_verified=verified,
+                    mismatch=ChainMismatch(
+                        table="egress_log", row_id="manifest",
+                        expected_hash=f"{m_head} ({m_count} rows)", got_hash=f"{prev} ({verified} rows)",
+                    ),
+                )
         return ChainStatus(server="osint-egress-audit", scope="all", ok=True, head_hash={"egress_log": prev},
                            rows_verified=verified)
 

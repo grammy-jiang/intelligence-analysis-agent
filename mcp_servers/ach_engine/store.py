@@ -148,12 +148,16 @@ class ACHStore:
             raise ACHError("create_matrix requires a non-empty hypothesis set.")
         matrix_id = uuid.uuid4().hex
         payload = {"matrix_id": matrix_id, "case_id": case_id}
-        prev = self._head("matrices")
-        rh = row_hash(prev, payload)
-        # M3: single transaction (commit or rollback atomically); manifest is written only AFTER the
-        # commit succeeds, so it can never record a row that was not durably committed.
-        appends: list[tuple[str, str]] = [("matrices", rh)]
+        # M1 (TOCTOU): read the chain head + compute row_hash INSIDE the write lock, immediately before the
+        # INSERT (mirrors _insert_hypothesis). If the head is read outside the lock, two concurrent writers can
+        # hash against the same stale head and fork the append-only chain — verify_chain then reports a false
+        # tamper on ordinary non-adversarial concurrency.
         with self._write_lock:
+            prev = self._head("matrices")
+            rh = row_hash(prev, payload)
+            # M3: single transaction (commit or rollback atomically); manifest is written only AFTER the
+            # commit succeeds, so it can never record a row that was not durably committed.
+            appends: list[tuple[str, str]] = [("matrices", rh)]
             with self._conn:
                 self._conn.execute(
                     "INSERT INTO matrices(matrix_id, case_id, prev_hash, row_hash) VALUES(?,?,?,?)",
@@ -268,9 +272,11 @@ class ACHStore:
             "judgment_source": judgment_source, "reason": reason, "rated_at": rated_at,
             "rated_ts": rated_ts,
         }
-        prev = self._head("cells")
-        rh = row_hash(prev, payload)
         with self._write_lock:
+            # M1 (TOCTOU): head-read + row_hash INSIDE the lock, immediately before the INSERT (mirrors
+            # _insert_hypothesis). Reading the head outside the lock lets concurrent writers fork the chain.
+            prev = self._head("cells")
+            rh = row_hash(prev, payload)
             with self._conn:  # M3: atomic commit-or-rollback
                 self._conn.execute(
                     "INSERT INTO cells(matrix_id, evidence_id, hypothesis_id, consistency, strength, analyst_id, "

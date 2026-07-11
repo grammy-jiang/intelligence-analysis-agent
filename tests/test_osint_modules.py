@@ -62,3 +62,36 @@ def test_audit_chain_detects_tamper(tmp_path):
         assert a.verify_chain().ok is False
     finally:
         a.close()
+
+
+def test_audit_detects_tail_truncation(tmp_path):
+    # MF3: deleting trailing audit rows (e.g. erasing an attempt->ok egress pair to hide an event) leaves a
+    # self-consistent SHORTER chain — a forward-only re-derivation would still report ok. The external manifest
+    # anchor (attested head + row count) must catch it.
+    a = EgressAudit(str(tmp_path / "audit.db"))
+    try:
+        a.record("fetch", {"host": "a.com"}, "1.1.1.1", "attempt (live)")
+        a.record("fetch", {"host": "a.com"}, "1.1.1.1", "ok")
+        assert a.verify_chain().ok is True
+        raw = sqlite3.connect(str(tmp_path / "audit.db"))
+        raw.execute("DELETE FROM egress_log WHERE seq=(SELECT MAX(seq) FROM egress_log)")
+        raw.commit()
+        raw.close()
+        st = a.verify_chain()
+        assert st.ok is False and st.mismatch is not None and st.mismatch.table == "egress_log"
+    finally:
+        a.close()
+
+
+def test_audit_missing_manifest_fails_closed(tmp_path):
+    # MF3: with the DB rows surviving but the manifest deleted, verify must NOT pass vacuously.
+    a = EgressAudit(str(tmp_path / "audit.db"))
+    try:
+        a.record("fetch", {"host": "a.com"}, "1.1.1.1", "ok")
+        assert a.verify_chain().ok is True
+        import os
+
+        os.remove(str(tmp_path / "audit.db.manifest.jsonl"))
+        assert a.verify_chain().ok is False
+    finally:
+        a.close()

@@ -267,6 +267,80 @@ def test_second_writer_refused(tmp_path):
     c.close()
 
 
+# --- M1: the single-resolution decision runs INSIDE the write lock (TOCTOU: check-then-act atomic) ---
+def test_resolution_check_runs_inside_write_lock(store):
+    # The prior code read _latest_resolution (the "already resolved?" decision) BEFORE acquiring the lock —
+    # two concurrent resolve_forecast(is_correction=False) calls could both observe "unresolved" and both
+    # append a first resolution, defeating the no-double-resolve invariant. Prove the decision read now
+    # happens while the write lock is held (mirrors evidence-ledger's grade-existence TOCTOU test).
+    class _TrackedLock:
+        def __init__(self, inner):
+            self._inner = inner
+            self.depth = 0
+
+        def acquire(self, *a, **k):
+            r = self._inner.acquire(*a, **k)
+            self.depth += 1
+            return r
+
+        def release(self):
+            self.depth -= 1
+            self._inner.release()
+
+        def __enter__(self):
+            self.acquire()
+            return self
+
+        def __exit__(self, *a):
+            self.release()
+
+    store._write_lock = _TrackedLock(store._write_lock)
+    depths: list[int] = []
+    orig = store._latest_resolution
+
+    def probe(forecast_id):
+        depths.append(store._write_lock.depth)
+        return orig(forecast_id)
+
+    store._latest_resolution = probe
+    ref = _log(store)
+    store.resolve_forecast(ref.forecast_id, True, ref.locked_at)
+    # the FIRST _latest_resolution call is the single-resolution decision; it must run under the lock.
+    assert depths and depths[0] > 0
+
+
+def test_void_check_runs_inside_write_lock(store):
+    # Same TOCTOU class for void: the pre-resolution-only / not-already-voided decision must be atomic with
+    # the append (the read was previously before the lock). RLock._is_owned() is True only while this thread
+    # holds the write lock.
+    held: list[bool] = []
+    orig = store._latest_resolution
+
+    def probe(forecast_id):
+        held.append(store._write_lock._is_owned())
+        return orig(forecast_id)
+
+    store._latest_resolution = probe
+    ref = _log(store)
+    store.void_forecast(ref.forecast_id, "mislogged")
+    assert held and held[0] is True  # the pre-resolution decision ran while the lock was held
+
+
+# --- M2: trailing-row truncation is caught by the manifest anchor (head + per-table row count) ---
+def test_manifest_detects_tail_truncation(store, tmp_path):
+    _log(store, q="q1")
+    _log(store, q="q2")
+    assert store.verify_chain().ok is True
+    # delete the last forecast row directly: the surviving chain stays internally self-consistent but shorter;
+    # only the external manifest anchor (attested head + row count) reveals the missing tail.
+    raw = sqlite3.connect(str(tmp_path / "cal.db"))
+    raw.execute("DELETE FROM forecasts WHERE seq=(SELECT MAX(seq) FROM forecasts)")
+    raw.commit()
+    raw.close()
+    st = store.verify_chain()
+    assert st.ok is False and st.mismatch is not None and st.mismatch.table == "forecasts"
+
+
 # --- N5: a corrupt stored locked_at fails the resolve loud, not silently skipping anti-backdating ---
 def test_corrupt_locked_at_blocks_resolve(store, tmp_path):
     ref = _log(store)

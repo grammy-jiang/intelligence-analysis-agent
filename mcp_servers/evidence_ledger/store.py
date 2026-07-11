@@ -24,6 +24,17 @@ from .models import (
 )
 
 _TABLES = ("evidence", "grades")
+# MF-1: the judgment-input boundary. `judgment_source` is ASSERTED by the calling skill and is NOT
+# server-verifiable (design v3 "Judgment provenance" — over stdio the server cannot confirm a human read-back
+# happened). We do NOT pretend to verify it. We DO enforce the two grounded, non-faking guarantees the server
+# can make: (a) the tag can only take an intended value — validated here at the store layer so even a direct
+# store caller (test/script/other transport) cannot smuggle a third value into the hash-chained payload,
+# mirroring ach-engine's SF7; (b) provenance is recorded tamper-evidently — every grade row hashes the trusted
+# local `analyst_id` (who) alongside `judgment_source` (what), and `get_evidence` surfaces both the grade's
+# judgment_source AND the evidence's source_channel, so a `source_channel='ingested'` item self-stamped
+# `analyst_confirmed` is auditable rather than hidden. Real enforcement (binding analyst_confirmed to a verified
+# human action) remains the calling skill's responsibility + the deferred token-gated confirm step.
+_JUDGMENT_SOURCE = ("analyst_confirmed", "model_draft")
 
 
 class EvidenceError(Exception):
@@ -221,6 +232,12 @@ class EvidenceStore:
         self, evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale, reason,
         *, require_first: bool,
     ) -> None:
+        # MF-1(a): enforce the judgment_source domain at the store layer, independent of the tool-boundary
+        # pydantic Literal — the tag can only ever be one of the two intended values, via any code path.
+        if judgment_source not in _JUDGMENT_SOURCE:
+            raise EvidenceError(
+                f"judgment_source must be one of {_JUDGMENT_SOURCE}, got {judgment_source!r}."
+            )
         graded_at = now_iso()
         payload = {
             "evidence_id": evidence_id, "reliability": reliability, "credibility": credibility,

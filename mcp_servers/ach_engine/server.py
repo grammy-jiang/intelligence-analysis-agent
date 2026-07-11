@@ -104,9 +104,13 @@ def _translate_ach_errors(fn: Callable) -> Callable:
 def create_matrix(
     case_id: Annotated[str, Field(max_length=_MAX_ID, description="The ACH case / investigation this matrix belongs to.")],
     hypotheses: Annotated[
-        list[str],
+        list[Annotated[str, Field(max_length=_MAX_TEXT)]],
         Field(
+            min_length=1,
             max_length=_MAX_HYPOTHESES,
+            # M2: cap EACH hypothesis string at _MAX_TEXT (not only the item COUNT) so create_matrix agrees
+            # with add_hypothesis's per-item bound and the store's non-empty contract — closing the DoS/size
+            # bypass where one create_matrix call could persist 64 unbounded strings into the append-only store.
             description="The initial competing hypotheses. Mutual-exclusivity is the ANALYST's "
             "responsibility; the tool only checks each is non-empty. Each is minted a stable "
             "synthetic hypothesis_id independent of its wording.",
