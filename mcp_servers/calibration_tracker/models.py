@@ -63,6 +63,15 @@ class CalibrationReport(BaseModel):
     n_corrected: int = Field(
         default=0, description="Count of scored forecasts whose outcome was later corrected (audit signal)."
     )
+    resolved_before_horizon: int = Field(
+        default=0,
+        description=(
+            "ADVISORY audit signal (NOT a correctness failure): count of resolved forecasts whose "
+            "resolved_at fell strictly BEFORE a stated, ISO-8601-parseable horizon — surfaced for human "
+            "review of possible premature/hindsight resolution. Early resolution is legitimate (an outcome "
+            "can be known before the stated deadline) and a free-form (non-date) horizon is skipped."
+        ),
+    )
     brier: float | None
     buckets: list[Bucket]
     resolution_component: float | None = Field(

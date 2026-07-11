@@ -489,9 +489,18 @@ class CalibrationStore:
 
     # ---- calibration report -----------------------------------------------
     def get_calibration_report(self, case_id: str | None = None) -> CalibrationReport:
+        """Compute Brier + Murphy decomposition over resolved, non-voided analyst_confirmed forecasts.
+
+        Also emits `resolved_before_horizon`: an ADVISORY count of resolutions that landed strictly before
+        a stated, ISO-8601-parseable `horizon` — a signal for human review of possible premature/hindsight
+        resolution, NOT a correctness failure. Early resolution is legitimate (an outcome can be known
+        before the stated deadline) and a free-form (non-date) horizon is skipped. The HARD anti-hindsight
+        controls live in resolve_forecast (the immutable lock + the resolved_at >= locked_at anti-backdate);
+        this is a review signal only and excludes nothing from scoring.
+        """
         # S3: scope the report to this analyst's own forecasts on a shared DB file.
         q = (
-            "SELECT f.forecast_id, f.probability FROM forecasts f "
+            "SELECT f.forecast_id, f.probability, f.horizon FROM forecasts f "
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id = ? "
             "AND f.forecast_id NOT IN (SELECT forecast_id FROM voids) "
             + ("AND f.case_id = ? " if case_id else "")
@@ -501,12 +510,24 @@ class CalibrationStore:
         ).fetchall()
         pairs: list[tuple[float, int]] = []
         n_corrected = 0
+        resolved_before_horizon = 0
         for r in rows:
             res = self._latest_resolution(r["forecast_id"])
             if res is not None:
                 pairs.append((r["probability"], int(res["outcome"])))
                 if self._correction_count(r["forecast_id"]) > 0:
                     n_corrected += 1
+                # ADVISORY (hindsight-auditability), NOT a gate: count resolutions that landed strictly
+                # before a stated, PARSEABLE horizon. `horizon` is free-form (S5) — a non-date such as
+                # "end of Q2" / "3mo" simply does not parse and is skipped (the ValueError is expected,
+                # never fatal). Early resolution is legitimate, so nothing is blocked or excluded here; the
+                # server merely records the analyst's resolved_at and flags the count for human review. The
+                # HARD anti-hindsight controls are resolve_forecast's immutable lock + resolved_at>=locked_at.
+                try:
+                    if _parse_iso(res["resolved_at"]) < _parse_iso(r["horizon"]):
+                        resolved_before_horizon += 1
+                except ValueError:
+                    pass  # free-form (non-date) horizon — skip, do not count.
         n_voided = self._conn.execute(
             "SELECT COUNT(*) c FROM voids v JOIN forecasts f ON f.forecast_id=v.forecast_id "
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id=? "
@@ -517,7 +538,8 @@ class CalibrationStore:
         n = len(pairs)
         if n == 0:
             return CalibrationReport(
-                n=0, n_voided=n_voided, n_corrected=0, brier=None, buckets=[], resolution_component=None,
+                n=0, n_voided=n_voided, n_corrected=0, resolved_before_horizon=resolved_before_horizon,
+                brier=None, buckets=[], resolution_component=None,
                 reliability_component=None, note="no resolved analyst_confirmed forecasts yet",
             )
         brier = sum((p - o) ** 2 for p, o in pairs) / n
@@ -543,6 +565,7 @@ class CalibrationStore:
             n=n,
             n_voided=n_voided,
             n_corrected=n_corrected,
+            resolved_before_horizon=resolved_before_horizon,
             brier=round(brier, 6),
             buckets=buckets,
             resolution_component=round(resolution, 6),

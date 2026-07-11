@@ -100,7 +100,19 @@ def resolve_forecast(
     reason: Annotated[str, Field(max_length=4000, description="Required (non-empty) when is_correction=True.")] = "",
 ) -> ForecastRecord:
     """Append the OUTCOME to a locked forecast. First resolution: is_correction=False. To fix a wrong
-    outcome: is_correction=True + non-empty reason (appends a superseding resolution; never edits)."""
+    outcome: is_correction=True + non-empty reason (appends a superseding resolution; never edits).
+
+    Trust model (like judgment_source: the server records the analyst's resolution faithfully; it does not,
+    and over stdio cannot, verify the world). The HARD, server-enforced anti-hindsight controls are: the
+    forecast's question+probability are IMMUTABLE once locked and hash-chained, and `resolved_at` must be
+    >= the forecast's `locked_at` (anti-backdating). The forecast's `horizon` is ADVISORY metadata only —
+    free-form text, NOT a machine-enforced gate: early resolution is legitimate (an outcome can be known
+    before the stated deadline), so the server does NOT block a `resolved_at` that precedes the horizon; it
+    merely counts such cases in get_calibration_report.resolved_before_horizon for human review. The
+    property that matters — that "the outcome was genuinely UNKNOWN when the forecast was made" — is
+    ANALYST-ASSERTED, exactly like judgment_source: the server records the analyst's `resolved_at` but
+    cannot verify the outcome was actually unknown at lock time. Real enforcement (only resolving once the
+    outcome is truly known) is the calling skill's / analyst's responsibility."""
     try:
         return store.resolve_forecast(forecast_id, outcome, resolved_at, is_correction, reason)
     except ForecastError as e:
