@@ -37,6 +37,13 @@ _CONSISTENCY = ("C", "I", "N/A")
 _STRENGTH = ("strong", "weak")
 _JUDGMENT_SOURCE = ("analyst_confirmed", "model_draft")
 
+# S5: store-layer length caps (defense-in-depth; mirrors calibration_tracker's store-layer caps and the
+# tool-boundary caps in server.py). The tables are append-only with NO reclamation, so a single direct-store
+# call (test/script/other transport that bypasses the pydantic Field caps) must not be able to inflate the
+# hash-chained store without limit — a cheap DoS on DB size + verify_chain's full-table scan.
+_MAX_ID = 512
+_MAX_TEXT = 10_000
+
 
 class ACHError(Exception):
     """Business-rule violation; the server wraps this as a FastMCP ToolError."""
@@ -58,7 +65,9 @@ class ACHStore:
         # M6: check_same_thread=False mirrors StalenessStore/EvidenceStore — FastMCP may dispatch a
         # tool body on a worker thread; the sqlite3 default (True) would raise ProgrammingError. All
         # writes are serialized through self._write_lock to preserve single-writer discipline.
-        self._write_lock = threading.Lock()
+        # RLock (not Lock) mirrors the sibling stores and is reentrant, so verify_chain taking the lock
+        # around its whole body cannot deadlock a future caller that already holds it (nest-safe).
+        self._write_lock = threading.RLock()
         self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
@@ -82,6 +91,9 @@ class ACHStore:
         )
         self._conn.commit()
         self._restrict_perms()
+        # M-manifest: tail of the self-chained manifest, read once at open so appends after a restart
+        # continue the chain (each line binds to the previous line's hash — a mid-file edit is detectable).
+        self._manifest_head = self._read_manifest_head()
 
     def _restrict_perms(self) -> None:
         # MF5/N8: the unkeyed SHA-256 chain's tamper-evidence rests on OS file isolation — keep the
@@ -109,41 +121,91 @@ class ACHStore:
         ).fetchone()
         return r["row_hash"] if r else GENESIS
 
+    def _read_manifest_head(self) -> str:
+        """Last manifest_hash on disk (GENESIS if no manifest yet) — the tail of the self-chain."""
+        if not self.manifest_path or not os.path.exists(self.manifest_path):
+            return GENESIS
+        last = GENESIS
+        with open(self.manifest_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    last = json.loads(line).get("manifest_hash", GENESIS)
+        return last
+
     def _append_manifest(self, table: str, head: str) -> None:
         if not self.manifest_path:
             return
-        # MF5/N8: create the manifest private (0o600) — it anchors the tamper-evidence reconciliation,
-        # so a co-resident writer must not be able to read/rewrite it. O_CREAT mode applies on creation.
+        # M-manifest: SELF-CHAIN each line to the previous line's hash (backport of the calibration/
+        # evidence-ledger manifest self-chaining) so a MIDDLE manifest line cannot be edited or dropped
+        # undetected — the per-table head+count reconciliation alone misses an edit to a non-terminal line.
+        # MF5/N8: create the manifest private (0o600) — it anchors the tamper-evidence reconciliation, so a
+        # co-resident writer must not read/rewrite it. O_CREAT mode applies on creation. Residual (SF4): the
+        # manifest shares the DB's trust domain, so an actor with filesystem write can recompute the whole
+        # self-chain in lockstep — durable tamper-evidence needs these heads shipped to an off-host WORM log.
+        payload = {"table": table, "head": head, "at": now_iso()}
+        mh = row_hash(self._manifest_head, payload)
+        entry = {**payload, "prev_manifest_hash": self._manifest_head, "manifest_hash": mh}
         fd = os.open(self.manifest_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps({"table": table, "head": head, "at": now_iso()}) + "\n")
+            fh.write(json.dumps(entry) + "\n")
+        self._manifest_head = mh
 
-    def _manifest_state(self) -> dict[str, tuple[str, int]] | None:
-        """Last recorded head + append-count per table from the manifest (None if no manifest file).
+    def _check_manifest(
+        self, heads: dict[str, str], counts: dict[str, int]
+    ) -> tuple[bool, ChainMismatch | None]:
+        """Reconcile the live tables against the manifest AND verify the manifest's own self-chain.
 
-        M2: verify_chain reconciles the live tables against this so trailing-row truncation — which
-        leaves a self-consistent but shorter chain — is detected instead of silently reporting ok.
+        M2: trailing-row truncation leaves a self-consistent but shorter chain; the per-table head +
+        append-count anchor catches it. The self-chain walk additionally catches an edit to any non-terminal
+        manifest line. A non-empty table with no manifest file at all fails closed (not a vacuous pass).
         """
-        if not self.manifest_path:
-            return None
-        state: dict[str, tuple[str, int]] = {}
-        try:
-            with open(self.manifest_path, encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    rec = json.loads(line)
-                    _, count = state.get(rec["table"], (GENESIS, 0))
-                    state[rec["table"]] = (rec["head"], count + 1)
-        except FileNotFoundError:
-            return {}
-        return state
+        if not self.manifest_path:  # in-memory stores have no manifest by design
+            return True, None
+        non_genesis = {t for t in _TABLES if heads.get(t, GENESIS) != GENESIS}
+        if not os.path.exists(self.manifest_path):
+            if non_genesis:
+                table = sorted(non_genesis)[0]
+                return False, ChainMismatch(
+                    table=table, row_id="<manifest-missing>",
+                    expected_hash=heads.get(table, GENESIS), got_hash=GENESIS,
+                )
+            return True, None
+        last: dict[str, str] = {}
+        last_count: dict[str, int] = {}
+        prev = GENESIS
+        with open(self.manifest_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                e = json.loads(line)
+                payload = {"table": e["table"], "head": e["head"], "at": e["at"]}
+                expected = row_hash(prev, payload)
+                if e.get("prev_manifest_hash") != prev or e.get("manifest_hash") != expected:
+                    return False, ChainMismatch(
+                        table=e.get("table", "?"), row_id="<manifest-chain>",
+                        expected_hash=expected, got_hash=str(e.get("manifest_hash", "")),
+                    )
+                prev = expected
+                last[e["table"]] = e["head"]
+                last_count[e["table"]] = last_count.get(e["table"], 0) + 1
+        for table in _TABLES:
+            m_head, m_count = last.get(table, GENESIS), last_count.get(table, 0)
+            if m_head != heads[table] or m_count != counts[table]:
+                return False, ChainMismatch(
+                    table=table, row_id="<manifest>",
+                    expected_hash=f"{m_head} (manifest: {m_count} rows)",
+                    got_hash=f"{heads[table]} (tables: {counts[table]} rows)",
+                )
+        return True, None
 
     # ---- matrix / hypotheses ----------------------------------------------
     def create_matrix(self, case_id: str, hypotheses: list[str]) -> MatrixRef:
         if not case_id or not case_id.strip():  # SF9: a blank case_id groups matrices outside any real case
             raise ACHError("create_matrix requires a non-empty case_id.")
+        if len(case_id) > _MAX_ID:  # S5: store-layer length cap (defense-in-depth), mirrors rate_cell's evidence_id
+            raise ACHError(f"case_id exceeds max length {_MAX_ID}.")
         if not hypotheses:
             raise ACHError("create_matrix requires a non-empty hypothesis set.")
         matrix_id = uuid.uuid4().hex
@@ -174,6 +236,8 @@ class ACHStore:
         """Insert one hypothesis row (no commit / no manifest — the caller owns the transaction)."""
         if not text or not text.strip():  # S3: reject empty/whitespace hypothesis text
             raise ACHError("hypothesis text must be non-empty.")
+        if len(text) > _MAX_TEXT:  # S5: bound every string that lands in the append-only chain (DoS)
+            raise ACHError(f"hypothesis text exceeds max length {_MAX_TEXT}.")
         hid = "h_" + uuid.uuid4().hex[:12]
         added_at = now_iso()
         payload = {"hypothesis_id": hid, "matrix_id": matrix_id, "text": text, "added_at": added_at}
@@ -230,6 +294,12 @@ class ACHStore:
     ) -> CellRecord:
         if not evidence_id or not evidence_id.strip():  # S3: reject blank evidence_id
             raise ACHError("evidence_id must be non-empty.")
+        # S5: store-layer length caps on the caller-controlled strings that persist into the append-only,
+        # no-reclamation cells row (evidence_id + reason) — independent of the tool-boundary pydantic caps.
+        if len(evidence_id) > _MAX_ID:
+            raise ACHError(f"evidence_id exceeds max length {_MAX_ID}.")
+        if len(reason) > _MAX_TEXT:
+            raise ACHError(f"reason exceeds max length {_MAX_TEXT}.")
         # SF7: enforce the value domains in the store, independent of the tool-boundary pydantic Literal.
         if consistency not in _CONSISTENCY:
             raise ACHError(f"consistency must be one of {_CONSISTENCY}, got {consistency!r}.")
@@ -259,9 +329,6 @@ class ACHStore:
                 "analyst_confirmed-graded in evidence-ledger (out-of-band confirmation required): "
                 "grade the evidence first, or record this rating as model_draft."
             )
-        prior = self._effective_cell(matrix_id, evidence_id, hypothesis_id)
-        if prior is not None and not reason.strip():
-            raise ACHError("reason is required when superseding an existing cell rating.")
         rated_at = now_iso()
         rated_ts = self._clock()
         # M1: rated_ts is in the hashed payload — it drives _cell_stale and the score_matrix staleness
@@ -273,8 +340,16 @@ class ACHStore:
             "rated_ts": rated_ts,
         }
         with self._write_lock:
-            # M1 (TOCTOU): head-read + row_hash INSIDE the lock, immediately before the INSERT (mirrors
-            # _insert_hypothesis). Reading the head outside the lock lets concurrent writers fork the chain.
+            # M1 (TOCTOU): the supersede decision (does a prior EFFECTIVE cell exist?), the
+            # reason-required-when-superseding check, and the head-read + row_hash + INSERT MUST all be one
+            # atomic critical section — mirrors evidence-ledger _insert_grade. Reading _effective_cell OUTSIDE
+            # the lock is a TOCTOU: two concurrent rate_cell calls could both observe "no prior", both skip the
+            # reason requirement, and the returned superseded flag could disagree with the committed order.
+            prior = self._effective_cell(matrix_id, evidence_id, hypothesis_id)
+            if prior is not None and not reason.strip():
+                raise ACHError("reason is required when superseding an existing cell rating.")
+            # M5: compute the correction flag in-lock from the same read that gated the reason requirement.
+            superseded = prior is not None
             prev = self._head("cells")
             rh = row_hash(prev, payload)
             with self._conn:  # M3: atomic commit-or-rollback
@@ -292,7 +367,7 @@ class ACHStore:
             matrix_id=matrix_id, evidence_id=evidence_id, hypothesis_id=hypothesis_id, consistency=consistency,
             strength=strength, judgment_source=judgment_source, reason=reason, rated_at=rated_at,
             # M5: report the truth — a rating that supersedes a prior effective cell is a correction.
-            superseded=prior is not None, row_hash=rh,
+            superseded=superseded, row_hash=rh,
         )
 
     def _effective_cells(self, matrix_id: str) -> list[sqlite3.Row]:
@@ -409,52 +484,49 @@ class ACHStore:
         # MF4: integrity is table-wide and ALWAYS GLOBAL — there is no per-case scope. The prior
         # `case_id` param was echoed into `scope` but never filtered any row (the whole DB was always
         # walked), advertising a filter that did nothing; siblings dropped it for the same reason.
-        heads: dict[str, str] = {}
-        counts: dict[str, int] = {}
-        verified = 0
-        for table in _TABLES:
-            prev = GENESIS
-            count = 0
-            rows = self._conn.execute(
-                f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
-            ).fetchall()
-            for r in rows:
-                payload = self._payload_for(table, r)
-                expected = row_hash(prev, payload)
-                if expected != r["row_hash"] or r["prev_hash"] != prev:
-                    return ChainStatus(
-                        server="ach-engine", scope="all", ok=False, head_hash=heads,
-                        rows_verified=verified,
-                        mismatch=ChainMismatch(
-                            table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
-                        ),
-                    )
-                prev = r["row_hash"]
-                count += 1
-                verified += 1
-            heads[table] = prev
-            counts[table] = count
-
-        # M2: reconcile the live tables against the manifest. Truncating the last N rows leaves a
-        # self-consistent shorter chain; without this check verify_chain would report ok=True with a
-        # lower rows_verified. The manifest's last head + append-count per table must match the tables.
-        manifest = self._manifest_state()
-        if manifest is not None:
+        # M2/lock: hold the write lock for the whole read+manifest walk (mirrors evidence-ledger). Every
+        # writer holds _write_lock across its commit -> manifest-append; without it here a verify interleaved
+        # with an in-flight write could read a row committed-but-not-yet-manifest-attested and report a
+        # spurious tamper on a healthy store. RLock is reentrant, so a caller already holding it won't deadlock.
+        with self._write_lock:
+            heads: dict[str, str] = {}
+            counts: dict[str, int] = {}
+            verified = 0
             for table in _TABLES:
-                m_head, m_count = manifest.get(table, (GENESIS, 0))
-                if m_head != heads[table] or m_count != counts[table]:
-                    return ChainStatus(
-                        server="ach-engine", scope="all", ok=False, head_hash=heads,
-                        rows_verified=verified,
-                        mismatch=ChainMismatch(
-                            table=table, row_id="manifest",
-                            expected_hash=f"{m_head} (manifest: {m_count} rows)",
-                            got_hash=f"{heads[table]} (tables: {counts[table]} rows)",
-                        ),
-                    )
-        return ChainStatus(
-            server="ach-engine", scope="all", ok=True, head_hash=heads, rows_verified=verified
-        )
+                prev = GENESIS
+                count = 0
+                rows = self._conn.execute(
+                    f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
+                ).fetchall()
+                for r in rows:
+                    payload = self._payload_for(table, r)
+                    expected = row_hash(prev, payload)
+                    if expected != r["row_hash"] or r["prev_hash"] != prev:
+                        return ChainStatus(
+                            server="ach-engine", scope="all", ok=False, head_hash=heads,
+                            rows_verified=verified,
+                            mismatch=ChainMismatch(
+                                table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
+                            ),
+                        )
+                    prev = r["row_hash"]
+                    count += 1
+                    verified += 1
+                heads[table] = prev
+                counts[table] = count
+
+            # M2/M-manifest: reconcile the live tables against the manifest AND verify the manifest self-chain
+            # (catches trailing-row truncation via head+count, and a non-terminal manifest-line edit via the
+            # self-chain walk). Truncating the last N rows leaves a self-consistent shorter chain otherwise.
+            manifest_ok, mismatch = self._check_manifest(heads, counts)
+            if not manifest_ok:
+                return ChainStatus(
+                    server="ach-engine", scope="all", ok=False, head_hash=heads,
+                    rows_verified=verified, mismatch=mismatch,
+                )
+            return ChainStatus(
+                server="ach-engine", scope="all", ok=True, head_hash=heads, rows_verified=verified
+            )
 
     def _payload_for(self, table: str, r: sqlite3.Row) -> dict:
         if table == "matrices":

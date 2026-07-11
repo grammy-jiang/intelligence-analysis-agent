@@ -51,8 +51,10 @@ def _now_iso() -> str:
 
 
 # Free-text field caps (S5): bound every string that lands in the hash-chained ledger so a single
-# tool call cannot inflate the append-only store without limit.
-MAX_ID = 200
+# tool call cannot inflate the append-only store without limit. MAX_ID = 512 aligns case_id — the SHARED
+# cross-server correlation key — with ach-engine and evidence-ledger (both 512), so a case_id valid in one
+# server is valid in all three (it was 200 here, a silent inconsistency on the shared key).
+MAX_ID = 512
 MAX_SHORT = 500
 MAX_TEXT = 4000
 
@@ -153,6 +155,8 @@ class CalibrationStore:
         if not self.manifest_path or not os.path.exists(self.manifest_path):
             return GENESIS, counts
         last = GENESIS
+        seen: set[str] = set()  # tables with ANY manifest entry
+        has_count: set[str] = set()  # tables with at least one "count"-bearing entry
         with open(self.manifest_path, encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
@@ -160,8 +164,19 @@ class CalibrationStore:
                     continue
                 e = json.loads(line)
                 last = e.get("manifest_hash", GENESIS)
+                seen.add(e["table"])
                 if "count" in e:
                     counts[e["table"]] = e["count"]
+                    has_count.add(e["table"])
+        # M2 count-migration: a PRE-count manifest (entries lacking "count") would otherwise seed the next
+        # append's running count from 0 — so the following write attests count=1 while the live table already
+        # holds N rows, a FALSE verify_chain tamper on upgrade. Seed the running count from the live table's
+        # actual row count for any table that has manifest entries but never carried a "count".
+        for table in seen - has_count:
+            if table in _TABLES:  # ignore an unknown/forged table name (the self-chain check catches that)
+                counts[table] = self._conn.execute(
+                    f"SELECT COUNT(*) c FROM {table}"  # noqa: S608 - table is an internal literal from _TABLES
+                ).fetchone()["c"]
         return last, counts
 
     def _append_manifest(self, table: str, head: str, count: int | None = None) -> None:
@@ -540,38 +555,43 @@ class CalibrationStore:
         # Integrity is table-wide by construction and CANNOT be scoped to a case_id, so no scope param
         # is accepted and scope is always reported as "all" (S8) — the response never claims a narrower
         # check than the one that actually ran.
-        heads: dict[str, str] = {}
-        counts: dict[str, int] = {}
-        verified = 0
-        for table in _TABLES:
-            prev = GENESIS
-            count = 0
-            rows = self._conn.execute(
-                f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
-            ).fetchall()
-            for r in rows:
-                payload = self._payload_for(table, r)
-                expected = _row_hash(prev, payload)
-                if expected != r["row_hash"] or r["prev_hash"] != prev:
-                    return ChainStatus(
-                        server="calibration-tracker", scope="all", ok=False,
-                        head_hash=heads, rows_verified=verified,
-                        mismatch=ChainMismatch(
-                            table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
-                        ),
-                    )
-                prev = r["row_hash"]
-                count += 1
-                verified += 1
-            heads[table] = prev
-            counts[table] = count
-        # External manifest check: DB head AND row count must match the last manifest entry per table
-        # (catches whole-chain deletion and trailing-row truncation of a self-consistent shorter chain).
-        manifest_ok, mismatch = self._check_manifest(heads, counts)
-        return ChainStatus(
-            server="calibration-tracker", scope="all", ok=manifest_ok,
-            head_hash=heads, rows_verified=verified, mismatch=mismatch,
-        )
+        # M1/lock: hold the write lock for the whole read+manifest walk (mirrors evidence-ledger). Every
+        # writer holds _write_lock across its commit -> manifest-append; without the lock here a verify
+        # interleaved with an in-flight write could read a row committed-but-not-yet-manifest-attested and
+        # report a spurious tamper. RLock is reentrant, so a caller already holding it won't deadlock.
+        with self._write_lock:
+            heads: dict[str, str] = {}
+            counts: dict[str, int] = {}
+            verified = 0
+            for table in _TABLES:
+                prev = GENESIS
+                count = 0
+                rows = self._conn.execute(
+                    f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
+                ).fetchall()
+                for r in rows:
+                    payload = self._payload_for(table, r)
+                    expected = _row_hash(prev, payload)
+                    if expected != r["row_hash"] or r["prev_hash"] != prev:
+                        return ChainStatus(
+                            server="calibration-tracker", scope="all", ok=False,
+                            head_hash=heads, rows_verified=verified,
+                            mismatch=ChainMismatch(
+                                table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
+                            ),
+                        )
+                    prev = r["row_hash"]
+                    count += 1
+                    verified += 1
+                heads[table] = prev
+                counts[table] = count
+            # External manifest check: DB head AND row count must match the last manifest entry per table
+            # (catches whole-chain deletion and trailing-row truncation of a self-consistent shorter chain).
+            manifest_ok, mismatch = self._check_manifest(heads, counts)
+            return ChainStatus(
+                server="calibration-tracker", scope="all", ok=manifest_ok,
+                head_hash=heads, rows_verified=verified, mismatch=mismatch,
+            )
 
     def _payload_for(self, table: str, r: sqlite3.Row) -> dict:
         if table == "forecasts":

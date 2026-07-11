@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 
 import pytest
@@ -93,5 +94,29 @@ def test_audit_missing_manifest_fails_closed(tmp_path):
 
         os.remove(str(tmp_path / "audit.db.manifest.jsonl"))
         assert a.verify_chain().ok is False
+    finally:
+        a.close()
+
+
+def test_audit_manifest_middle_line_edit_detected(tmp_path):
+    # review item #7: the egress manifest is now SELF-CHAINED (prev_manifest_hash / manifest_hash) so editing a
+    # NON-TERMINAL line is detected. The prior head+count anchor only checked the LAST line's head + the total
+    # count, so an edit to a middle line (head unchanged for the tail, count unchanged) slipped through.
+    a = EgressAudit(str(tmp_path / "audit.db"))
+    try:
+        for i in range(3):
+            a.record("fetch", {"host": f"h{i}.com"}, "1.1.1.1", "ok")
+        assert a.verify_chain().ok is True
+        mp = str(tmp_path / "audit.db.manifest.jsonl")
+        with open(mp, encoding="utf-8") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        assert len(lines) >= 3  # a genuine middle line exists
+        e = json.loads(lines[1])  # a MIDDLE line — neither the tail head nor the total count changes
+        e["head"] = "0" * 64
+        lines[1] = json.dumps(e)
+        with open(mp, "w", encoding="utf-8") as fh:
+            fh.write("\n".join(lines) + "\n")
+        st = a.verify_chain()
+        assert st.ok is False and st.mismatch is not None and st.mismatch.table == "egress_log"
     finally:
         a.close()

@@ -154,33 +154,12 @@ def test_second_writer_refused(tmp_path):  # SF3
         st.close()
 
 
-def test_grade_existence_check_runs_inside_write_lock(ev):  # M1 (TOCTOU: check-then-act atomic)
+def test_grade_existence_check_runs_inside_write_lock(ev, tracked_lock):  # M1 (TOCTOU: check-then-act atomic)
     # The first-grade / has-prior-grade check must execute INSIDE the write-lock critical section, not
     # before it (old code checked in the public method, before the lock — two concurrent first grades
     # could both observe "no grade" and both insert). We prove atomicity by recording the lock depth at
     # the moment the existence check (_effective_grade) runs during an insert: it must be > 0.
-    class _TrackedLock:
-        def __init__(self, inner):
-            self._inner = inner
-            self.depth = 0
-
-        def acquire(self, *a, **k):
-            r = self._inner.acquire(*a, **k)
-            self.depth += 1
-            return r
-
-        def release(self):
-            self.depth -= 1
-            self._inner.release()
-
-        def __enter__(self):
-            self.acquire()
-            return self
-
-        def __exit__(self, *a):
-            self.release()
-
-    ev._write_lock = _TrackedLock(ev._write_lock)
+    ev._write_lock = tracked_lock(ev._write_lock)  # TrackedLock helper lives in conftest.py (DRY)
     depths: list[int] = []
     orig = ev._effective_grade
 
@@ -244,3 +223,44 @@ def test_store_rejects_out_of_domain_judgment_source(ev):  # MF-1(a): store-laye
     ref = ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed")
     with pytest.raises(EvidenceError, match="judgment_source"):
         ev.grade_evidence(ref.evidence_id, "B", "2", "d", "totally_trusted")
+
+
+def test_add_evidence_store_length_caps(ev):  # review item #6: store-layer DoS closure (append-only, no reclamation)
+    # The tool boundary only capped the ENTRY COUNT of expected_observables (256) — a single entry with a giant
+    # VALUE (e.g. {"h": "A"*50_000_000}) slipped straight through to the append-only row. The store now caps each
+    # observable value AND key, plus the other free-text fields — a direct store caller cannot inflate the chain.
+    with pytest.raises(EvidenceError, match="expected_observables value exceeds max length"):
+        ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed", {"h": "A" * 2001})
+    with pytest.raises(EvidenceError, match="expected_observables key exceeds max length"):
+        ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed", {"k" * 513: "ok"})
+    with pytest.raises(EvidenceError, match="item exceeds max length"):
+        ev.add_evidence("c1", "z" * 100_001, "src1", "report", False, "analyst_typed")
+    with pytest.raises(EvidenceError, match="case_id exceeds max length"):
+        ev.add_evidence("c" * 513, "x", "src1", "report", False, "analyst_typed")
+
+
+def test_insert_grade_store_length_caps(ev):  # review item #6: store-layer caps on the free-text grade strings
+    ref = ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed")
+    with pytest.raises(EvidenceError, match="diagnosticity exceeds max length"):
+        ev.grade_evidence(ref.evidence_id, "B", "2", "d" * 10_001, "analyst_confirmed")
+    with pytest.raises(EvidenceError, match="rationale exceeds max length"):
+        ev.grade_evidence(ref.evidence_id, "B", "2", "d", "analyst_confirmed", "r" * 10_001)
+
+
+def test_failed_insert_rolls_back_no_dangling_transaction(ev):  # review item #5 (atomic `with self._conn:`)
+    # A failed INSERT must roll back cleanly, NOT leave a dangling OPEN transaction that a later commit could
+    # smuggle into the append-only ledger. Force a UNIQUE(evidence_id) violation and assert the connection
+    # holds no open transaction afterward — the old execute()+commit() idiom left in_transaction=True here.
+    from unittest import mock
+
+    from mcp_servers.evidence_ledger import store as store_mod
+
+    with mock.patch.object(store_mod.uuid, "uuid4") as u:
+        u.return_value.hex = "FIXEDDUPLICATEID"  # both adds mint the same evidence_id -> 2nd hits UNIQUE
+        ev.add_evidence("c1", "a", "s", "report", False, "analyst_typed")
+        with pytest.raises(sqlite3.IntegrityError):
+            ev.add_evidence("c1", "b", "s", "report", False, "analyst_typed")
+    assert ev._conn.in_transaction is False  # the failed insert rolled back; no dangling transaction
+    # the ledger stays usable + consistent after the rolled-back failure
+    ev.add_evidence("c1", "c", "s", "report", False, "analyst_typed")
+    assert ev.verify_chain().ok is True

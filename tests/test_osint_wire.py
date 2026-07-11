@@ -72,12 +72,8 @@ async def _run() -> None:
         async with Client(ev_mcp) as ec:
             rec = await ec.call_tool("get_evidence", {"evidence_id": eid})
         assert rec.data.source_channel == "ingested" and rec.data.grades == []
-        # M2/S17: an oversized identifier is rejected at this tool's schema (before touching the append-only ledger)
-        await expect(
-            "propose_to_ledger",
-            {"case_id": "x" * 600, "artifact_ref": tok, "source_id": "s", "note": "n"},
-            "",  # any ToolError; Pydantic max_length rejection
-        )
+        # (osint's OWN oversized-case_id cap is pinned in test_propose_case_id_cap_enforced_by_osint_schema —
+        # the prior inline check here matched any ToolError, which the ledger's independent cap satisfied too.)
         # egress audit chain verifies
         v = await c.call_tool("verify_chain", {})
         assert v.data.ok is True
@@ -265,5 +261,110 @@ def test_propose_requires_configured_ledger(monkeypatch):
                 raise AssertionError("expected ToolError when ledger unconfigured")
             except ToolError as e:
                 assert "not itself a ledger writer" in str(e)
+
+    asyncio.run(_go())
+
+
+def test_artifact_ref_cap_enforced_by_schema():
+    """Review item #9: compute_hash / extract_exif / reverse_image_search cap artifact_ref at the schema
+    (Field(max_length=_MAX_ID)). Pinned to the SCHEMA message — without the cap, compute_hash/extract_exif
+    would raise 'invalid artifact_ref' and reverse_image_search would raise the confirmed-gate message, so a
+    bare `except ToolError` would not prove the cap fired."""
+
+    async def _go() -> None:
+        async with Client(mcp) as c:
+            async def err(tool, args) -> str:
+                try:
+                    await c.call_tool(tool, args)
+                    raise AssertionError(f"expected ToolError from {tool}")
+                except ToolError as e:
+                    return str(e)
+
+            big = "x" * (srv._MAX_ID + 1)
+            assert "at most 512 characters" in await err("compute_hash", {"artifact_ref": big})
+            assert "at most 512 characters" in await err("extract_exif", {"artifact_ref": big})
+            assert "at most 512 characters" in await err(
+                "reverse_image_search", {"artifact_ref": big, "connector": "image"}
+            )
+
+    asyncio.run(_go())
+
+
+def test_consent_gate_refusals_leave_audit_row():
+    """Review item #3: the three consent/provenance refusals (fetch without provenance/confirm,
+    reverse_image_search and get_map_tile without confirm) each RAISE — but a blocked egress-relevant attempt
+    must STILL be audited (control #10), mirroring test_blocked_screen_leaves_audit_row. Previously each raised
+    before any audit.record, so a refused upload/disclosure/freeform-fetch left NO trace."""
+
+    def blocked_confirm_count():
+        return srv.audit._conn.execute(
+            "SELECT COUNT(*) c FROM egress_log WHERE outcome=?", ("blocked (confirmation required)",)
+        ).fetchone()["c"]
+
+    async def _go() -> None:
+        async with Client(mcp) as c:
+            tok = srv.artifacts.put(b"\xff\xd8\xff\xe0 img")
+            cases = [
+                ("fetch", {"url": "https://never-seen-in-any-session.invalid/x"}),  # no provenance, no confirm
+                ("reverse_image_search", {"artifact_ref": tok, "connector": "image"}),  # no confirm
+                ("get_map_tile", {"lat": 1.0, "lon": 2.0, "zoom": 5, "connector": "map"}),  # no confirm
+            ]
+            for tool, args in cases:
+                before = blocked_confirm_count()  # relative, so robust to rows left by other tests
+                try:
+                    await c.call_tool(tool, args)
+                    raise AssertionError(f"expected ToolError from {tool}")
+                except ToolError:
+                    pass
+                assert blocked_confirm_count() == before + 1, f"{tool} refusal left NO audit row"
+            assert srv.audit.verify_chain().ok is True  # audit chain + manifest stay consistent
+
+    asyncio.run(_go())
+
+
+def test_propose_case_id_cap_enforced_by_osint_schema(monkeypatch):
+    """Review item #12: osint's OWN Field(max_length=_MAX_ID) on propose_to_ledger.case_id must reject an
+    oversized case_id at osint's input schema — BEFORE the tool body runs and reaches evidence-ledger. Pinned
+    with a PERMISSIVE fake ledger that accepts anything: if osint's cap were removed, the over-cap call would
+    SUCCEED (the fake imposes no cap), so a raised ToolError proves osint enforces the cap itself — not the
+    ledger's independent cap (the flaw in the prior needle="" check)."""
+    calls: list = []
+
+    class _PermissiveClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def call_tool(self, name, args):
+            calls.append(args)
+
+            class _R:
+                data = {"evidence_id": "ok", "case_id": args.get("case_id", "")}
+
+            return _R()
+
+    monkeypatch.setattr(srv, "_ledger_client", lambda: _PermissiveClient())
+
+    async def _go() -> None:
+        async with Client(mcp) as c:
+            tok = srv.artifacts.put(b"\xff\xd8\xff\xe0 img")
+            # at the cap (== _MAX_ID chars): passes osint's schema, reaches the permissive fake, succeeds
+            ok = await c.call_tool(
+                "propose_to_ledger",
+                {"case_id": "x" * srv._MAX_ID, "artifact_ref": tok, "source_id": "s", "note": "n"},
+            )
+            assert ok.data.evidence_id == "ok" and len(calls) == 1
+            # over the cap: rejected at osint's schema; the body never runs so the ledger is never called
+            try:
+                await c.call_tool(
+                    "propose_to_ledger",
+                    {"case_id": "x" * (srv._MAX_ID + 1), "artifact_ref": tok, "source_id": "s", "note": "n"},
+                )
+                raise AssertionError("expected ToolError for a case_id over osint's own cap")
+            except ToolError:
+                pass
+            assert len(calls) == 1  # the oversized call NEVER reached the ledger -> osint's own cap fired
 
     asyncio.run(_go())
