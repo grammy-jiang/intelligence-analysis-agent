@@ -12,6 +12,7 @@ these signals here — never ach-engine's core tables.
 
 from __future__ import annotations
 
+import os
 import sqlite3
 import time
 from collections.abc import Callable
@@ -25,7 +26,11 @@ class StalenessStore:
     def __init__(self, db_path: str, clock: Callable[[], float] = time.time):
         self.db_path = db_path
         self._clock = clock
-        self._conn = sqlite3.connect(db_path)
+        # S2: check_same_thread=False to match EvidenceStore. grade_evidence -> _mark_staleness_signals
+        # writes here on the same dispatch thread; if FastMCP ever runs a tool body on a worker thread,
+        # the default (True) would raise ProgrammingError — the exact scenario EvidenceStore guards
+        # against. Writes are serialized by EvidenceStore._write_lock (the only writer of these signals).
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(
@@ -43,12 +48,24 @@ class StalenessStore:
             """
         )
         self._conn.commit()
+        # MF5/N8: keep this shared signal DB (+ WAL sidecars) private — its grade_signals chain is the
+        # collect-then-grade authority; the unkeyed chain's tamper-evidence rests on OS file isolation.
+        if db_path != ":memory:":
+            for path in (db_path, db_path + "-wal", db_path + "-shm"):
+                if os.path.exists(path):
+                    try:
+                        os.chmod(path, 0o600)
+                    except OSError:
+                        pass
 
     def close(self) -> None:
         self._conn.close()
 
     def _head(self, table: str) -> str:
-        assert table in _TABLES
+        # MF3: explicit guard (not assert — assertions are stripped under python -O / PYTHONOPTIMIZE,
+        # which would re-open f-string SQL-identifier interpolation below). Mirrors ACHStore._head.
+        if table not in _TABLES:
+            raise ValueError(f"unknown table: {table}")
         r = self._conn.execute(
             f"SELECT row_hash FROM {table} ORDER BY seq DESC LIMIT 1"  # noqa: S608 - internal literal
         ).fetchone()

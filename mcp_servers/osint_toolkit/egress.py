@@ -61,7 +61,10 @@ def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addres
 def _default_resolver(host: str) -> list[str]:
     try:
         return list({info[4][0] for info in socket.getaddrinfo(host, None)})
-    except socket.gaierror:
+    except (socket.gaierror, UnicodeError, OSError):
+        # S10: gaierror is the common case, but an IDNA-invalid host raises UnicodeError and other name-service
+        # failures raise plain OSError; all must resolve to "no IPs" (→ fail-closed EgressError) rather than
+        # escape the EgressError taxonomy the caller converts to a ToolError.
         return []
 
 
@@ -84,6 +87,16 @@ def validate_url(
     host = parts.hostname
     if not host:
         raise EgressError("no host in URL")
+
+    # MF3: factor the port into the egress decision. urlsplit parses `port` lazily and raises ValueError on a
+    # malformed value; a nonstandard port often fronts an internal service reachable even on a public IP, so
+    # fail closed to 443 only rather than let the live fetcher silently substitute 443 for a different endpoint.
+    try:
+        port = parts.port
+    except ValueError:
+        raise EgressError("invalid port in URL") from None
+    if port is not None and port != 443:
+        raise EgressError(f"port not allowed (https/443 only): {port}")
 
     literal = _parse_ip_literal(host)
     if literal is not None:
@@ -118,9 +131,17 @@ def _pinned_https_get(host: str, ip: str, url: str) -> tuple[int, dict, bytes]:
     path = parts.path or "/"
     if parts.query:
         path += "?" + parts.query
+    port = parts.port or 443  # MF3: honor the validated port (validate_url has already restricted it to 443)
     ctx = ssl.create_default_context()
-    raw_sock = socket.create_connection((ip, 443), timeout=15)
-    tls = ctx.wrap_socket(raw_sock, server_hostname=host)
+    raw_sock = socket.create_connection((ip, port), timeout=15)
+    # M4: wrap_socket runs BEFORE the try/finally below. A handshake failure (bad cert / timeout — routine for
+    # an SSRF-hardened fetcher probing hostile hosts) would otherwise leak raw_sock's fd, since `tls` never
+    # binds and the finally's tls.close() never runs. Close the underlying socket on any wrap failure.
+    try:
+        tls = ctx.wrap_socket(raw_sock, server_hostname=host)
+    except BaseException:
+        raw_sock.close()
+        raise
     try:
         conn = http.client.HTTPSConnection(host, timeout=15)
         conn.sock = tls  # reuse the pre-connected, pinned, cert-validated socket (no re-resolve)

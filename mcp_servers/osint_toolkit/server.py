@@ -8,20 +8,21 @@ real services are a follow-on. Every result is a CANDIDATE; writes to evidence-l
 
 from __future__ import annotations
 
+import http.client
 import os
+import ssl
 import sys
+from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from pydantic import Field
 
 from ..common import ChainStatus
-from ..evidence_ledger.store import EvidenceStore
-from ..staleness import StalenessStore
 from .artifacts import ArtifactError, ArtifactStore
 from .audit import EgressAudit
 from .egress import EgressError, validate_url
 from .models import (
-    CONNECTOR_HOSTS,
     CandidateMatches,
     Connector,
     ExifData,
@@ -35,37 +36,76 @@ from .models import (
 _DATA = os.path.join(os.path.dirname(__file__), "..", "..", "data")
 OSINT_LIVE = os.environ.get("OSINT_LIVE") == "1"
 NOTE_CAP = 500
+# S4: bound the two highest-risk egress free-text inputs at the JSON schema (every other free-text field is
+# already capped) so an oversized payload is rejected before _screen / urlsplit scan it in full.
+_MAX_QUERY = 1024
+_MAX_URL = 2048
+# Mirrors evidence-ledger's own _MAX_ID; the ledger (the single writer) ultimately enforces it, but we bound
+# the proposal fields here too so oversized input is rejected at this tool's JSON schema (review M2/S17).
+_MAX_ID = 512
 # control #7a: outgoing text is screened for these case/source identifiers before egress (exfil channel).
 CASE_IDENTIFIERS = {s for s in os.environ.get("OSINT_CASE_IDENTIFIERS", "").split(",") if s.strip()}
 
 _AUDIT_DB = os.environ.get("OSINT_AUDIT_DB", os.path.join(_DATA, "audit.db"))
 _ARTIFACTS_DIR = os.environ.get("OSINT_ARTIFACTS_DIR", os.path.join(_DATA, "artifacts"))
-_EVIDENCE_DB = os.environ.get("EVIDENCE_DB", os.path.join(_DATA, "evidence.db"))
-_STALENESS_DB = os.environ.get("STALENESS_DB", os.path.join(_DATA, "staleness.db"))
-for p in (_AUDIT_DB, _EVIDENCE_DB, _STALENESS_DB):
-    os.makedirs(os.path.dirname(os.path.abspath(p)), exist_ok=True)
+os.makedirs(os.path.dirname(os.path.abspath(_AUDIT_DB)), exist_ok=True)
+
+# M1: osint-toolkit is NOT a ledger writer. evidence-ledger takes an exclusive, lifetime single-writer lock on
+# evidence.db (a tested integrity invariant), and .mcp.json runs evidence-ledger and osint-toolkit as SEPARATE
+# processes on the same default data/evidence.db — so opening a second in-process EvidenceStore here fails
+# closed at import and breaks the MCP initialize handshake. Instead, propose_to_ledger routes the ingested
+# proposal to the single evidence-ledger writer over the MCP boundary (EVIDENCE_LEDGER_URL). This keeps
+# evidence.db single-writer and its append-only hash chain un-forkable.
+EVIDENCE_LEDGER_URL = os.environ.get("EVIDENCE_LEDGER_URL")
 
 audit = EgressAudit(_AUDIT_DB)
 artifacts = ArtifactStore(_ARTIFACTS_DIR)
-_staleness = StalenessStore(_STALENESS_DB)
-_evidence = EvidenceStore(_EVIDENCE_DB, _staleness)
-_session_urls: set[str] = set()  # URLs returned by prior search/reverse_image_search (fetch provenance set)
+# URLs a prior in-session fetch has already passed the guard for (fetch provenance set). NOTE: the stub
+# search/reverse_image_search connectors do NOT populate this yet — when live connectors ship they MUST add
+# their returned candidate URLs here, or the "url must come from a prior search result" gate in fetch() stays
+# satisfiable only via confirmed=True (review S5).
+_session_urls: set[str] = set()
 
-mcp = FastMCP("osint-toolkit")
+# M3: mask_error_details=True — this is the highest-risk server (sole external egress, parses untrusted fetched
+# bytes). Any non-ToolError (sqlite/disk/internal bug) must not leak raw str(e) — DB paths, SQL — to the client.
+mcp = FastMCP("osint-toolkit", mask_error_details=True)
+
+
+def _ledger_client():
+    """A fastmcp Client connected to the SINGLE evidence-ledger writer, or None if unconfigured. Tests inject
+    an in-memory client by monkeypatching this function."""
+    if not EVIDENCE_LEDGER_URL:
+        return None
+    from fastmcp import Client
+
+    return Client(EVIDENCE_LEDGER_URL)
+
+
+def _norm_screen(s: str) -> str:
+    """Casefold and strip common separators so `CASE-1234` / `CASE 1234` / `case.1234` all collapse to one form.
+    S7: this is coarse defense-in-depth (it still misses base64/encoding), NOT the primary control."""
+    return "".join(ch for ch in s.casefold() if ch.isalnum())
 
 
 def _screen(text: str) -> None:
-    """Pre-egress exfiltration screen (control #7a): refuse if outgoing text carries a case/source identifier."""
-    lowered = text.lower()
+    """Pre-egress exfiltration screen (control #7a): refuse if outgoing text carries a case/source identifier.
+    S7: compares on a separator-stripped casefold form so trivial spacing/case/punctuation edits don't bypass."""
+    normalized = _norm_screen(text)
     for ident in CASE_IDENTIFIERS:
-        if ident.lower() in lowered:
-            raise ToolError(f"pre-egress gate: outgoing text carries a case/source identifier; blocked")
+        needle = _norm_screen(ident)
+        if needle and needle in normalized:
+            raise ToolError("pre-egress gate: outgoing text carries a case/source identifier; blocked")
 
 
 @mcp.tool
-def search(query: str, connector: Connector, max_results: int = 20) -> SearchResult:
+def search(
+    query: Annotated[str, Field(max_length=_MAX_QUERY)],
+    connector: Connector,
+    max_results: Annotated[int, Field(gt=0, le=100)] = 20,
+) -> SearchResult:
     """ONE search tool with an allowlisted `connector`. Returns CANDIDATE results (source_channel='ingested',
-    inert data). The pre-egress gate screens `query` before egress."""
+    inert data). The pre-egress gate screens `query` before egress. NOTE: no live connector is configured in
+    this deployment — the call runs the guard/gate/audit then fails closed with a ToolError (review S19)."""
     _screen(query)
     audit.record("search", {"connector": connector, "max_results": max_results}, "-", "attempt")
     if not OSINT_LIVE:
@@ -74,27 +114,56 @@ def search(query: str, connector: Connector, max_results: int = 20) -> SearchRes
 
 
 @mcp.tool
-def fetch(url: str, confirmed: bool = False) -> FetchedArtifact:
+def fetch(
+    url: Annotated[str, Field(max_length=_MAX_URL)],
+    confirmed: Annotated[
+        bool,
+        Field(
+            description="Analyst override allowing a URL that did NOT come from a prior in-session search "
+            "result. ASSERTED, not verified — the host MUST bind this to real human approval (control #7c)."
+        ),
+    ] = False,
+) -> FetchedArtifact:
     """Fetch a URL through the egress guard. `url` must EXACTLY MATCH a URL from a prior in-session search
-    result, else `confirmed=True` is required (control #7a). SSRF-guarded + audited before anything leaves."""
+    result, else `confirmed=True` is required (control #7a). SSRF-guarded + audited before anything leaves.
+
+    S3: no live connector populates the provenance set in this deployment (the stub `search` always raises),
+    so today `confirmed=True` is required for every first fetch — it is not populated by any prior search."""
     if url not in _session_urls and not confirmed:
         raise ToolError("url did not originate from a prior in-session search result; pass confirmed=True")
     _screen(url)
     try:
         host, ip = validate_url(url)  # fetch = SSRF blocklist (no per-connector allowlist)
     except EgressError as e:
-        audit.record("fetch", {"host": "?"}, "-", f"blocked: {e}")
-        raise ToolError(f"egress guard blocked the URL: {e}") from e
+        # MF1: the EgressError text can carry the resolved internal IP (a network-recon oracle). Keep both the
+        # audit `outcome` column AND the client-visible ToolError host/IP-free; host/IP live in the audit DB only.
+        audit.record("fetch", {"host": "?"}, "-", "blocked (pre-fetch guard)")
+        print(f"[osint-toolkit] pre-fetch guard block: {e!r}", file=sys.stderr)
+        raise ToolError("egress guard blocked the URL (host/IP recorded in the audit log only)") from e
     if not OSINT_LIVE:
         audit.record("fetch", {"host": host}, ip, "attempt (live off)")
-        raise ToolError("live fetch disabled (set OSINT_LIVE=1). Guard/gate/audit ran; IP pinned to " + ip)
+        # S8: do not echo the resolved IP back to the client (a resolution oracle reachable with live off via
+        # confirmed=True). The pinned IP is recorded in the audit log only.
+        raise ToolError("live fetch disabled (set OSINT_LIVE=1). Guard/gate/audit ran; IP pinned in the audit log.")
     from .egress import fetch_pinned
 
+    # MF2: audit the live egress ATTEMPT before the socket opens — a real fetch that dies at the socket/TLS
+    # layer must still leave a log row (control #10: every outbound call audited).
+    audit.record("fetch", {"host": host}, ip, "attempt (live)")
     try:
         final_url, body, ctype = fetch_pinned(url)  # re-validates every redirect hop; pinned TLS
     except EgressError as e:
-        audit.record("fetch", {"host": host}, ip, f"blocked: {e}")
-        raise ToolError(f"egress guard blocked during fetch: {e}") from e
+        audit.record("fetch", {"host": host}, ip, "blocked (fetch guard)")  # fixed reason code
+        print(f"[osint-toolkit] fetch guard block: {e!r}", file=sys.stderr)
+        raise ToolError("egress guard blocked during fetch (host/IP recorded in the audit log only)") from e
+    except (OSError, ssl.SSLError, http.client.HTTPException) as e:
+        # MF2: fetch_pinned raises plain socket/TLS/HTTP errors (TimeoutError, ConnectionRefusedError,
+        # ssl.SSLError, http.client.HTTPException) that are NOT EgressError. Without this they escape uncaught
+        # (masked to an opaque error) and the attempt would be unaudited. Record the failure, surface a
+        # detail-free ToolError, never leak the raw exception.
+        audit.record("fetch", {"host": host}, ip, "error (network/TLS)")
+        print(f"[osint-toolkit] fetch network/TLS error: {e!r}", file=sys.stderr)
+        raise ToolError("fetch failed at the network/TLS layer (details in the server log only)") from e
     tok = artifacts.put(body)
     audit.record("fetch", {"host": host}, ip, "ok")
     _session_urls.add(final_url)
@@ -135,9 +204,20 @@ def extract_exif(artifact_ref: str) -> ExifData:
 
 
 @mcp.tool
-def reverse_image_search(artifact_ref: str, connector: Connector, confirmed: bool = False) -> CandidateMatches:
+def reverse_image_search(
+    artifact_ref: str,
+    connector: Connector,
+    confirmed: Annotated[
+        bool,
+        Field(
+            description="Analyst consent to UPLOAD this image (a subject's likeness) to a third party. "
+            "ASSERTED, not verified — the host MUST bind this to real human approval (control #7c)."
+        ),
+    ] = False,
+) -> CandidateMatches:
     """CANDIDATE image matches. Uploads the image to an external connector — may transmit a subject's likeness
-    — so it REQUIRES `confirmed=True` (control #7c)."""
+    — so it REQUIRES `confirmed=True` (control #7c). NOTE: no live connector is configured in this deployment
+    — the call runs the guard/audit then fails closed with a ToolError (review S19)."""
     if not confirmed:
         raise ToolError("reverse_image_search uploads an image to a third party; pass confirmed=True")
     try:
@@ -151,10 +231,25 @@ def reverse_image_search(artifact_ref: str, connector: Connector, confirmed: boo
 
 
 @mcp.tool
-def get_map_tile(lat: float, lon: float, zoom: int, connector: Connector) -> MapTile:
-    """CANDIDATE map tile for geolocation work. Not a verified location."""
-    if not (-90 <= lat <= 90 and -180 <= lon <= 180 and 0 <= zoom <= 22):
-        raise ToolError("lat/lon/zoom out of range")
+def get_map_tile(
+    lat: Annotated[float, Field(ge=-90, le=90)],
+    lon: Annotated[float, Field(ge=-180, le=180)],
+    zoom: Annotated[int, Field(ge=0, le=22)],
+    connector: Connector,
+    confirmed: Annotated[
+        bool,
+        Field(
+            description="Analyst consent to disclose these coordinates (a subject's location of interest) to a "
+            "third-party tile provider. ASSERTED, not verified — the host MUST bind this to real human approval."
+        ),
+    ] = False,
+) -> MapTile:
+    """CANDIDATE map tile for geolocation work. Not a verified location. Discloses lat/lon to a third-party
+    tile provider, so it REQUIRES `confirmed=True` (control #7c — same third-party-disclosure gate as `fetch`
+    and `reverse_image_search`). S5: lat/lon/zoom bounds are enforced at the JSON schema so clients self-validate.
+    NOTE: no live connector is configured in this deployment — the call fails closed with a ToolError (S19)."""
+    if not confirmed:
+        raise ToolError("get_map_tile discloses coordinates to a third-party tile provider; pass confirmed=True")
     audit.record("get_map_tile", {"connector": connector, "zoom": zoom}, "-", "attempt")
     if not OSINT_LIVE:
         raise ToolError("live connector disabled (set OSINT_LIVE=1). Guard/audit ran.")
@@ -162,17 +257,58 @@ def get_map_tile(lat: float, lon: float, zoom: int, connector: Connector) -> Map
 
 
 @mcp.tool
-def propose_to_ledger(case_id: str, artifact_ref: str, source_id: str, note: str, pii: bool = False) -> ProposalRef:
+async def propose_to_ledger(
+    case_id: Annotated[str, Field(max_length=_MAX_ID)],
+    artifact_ref: Annotated[str, Field(max_length=_MAX_ID)],
+    source_id: Annotated[str, Field(max_length=_MAX_ID)],
+    note: Annotated[str, Field(max_length=NOTE_CAP)],
+    pii: Annotated[
+        bool,
+        Field(
+            description="True if `note`/artifact identifies a human source. Passed through to evidence-ledger, "
+            "which redacts PII items on read (source identity is life-safety). ASSERTED by the caller."
+        ),
+    ] = False,
+) -> ProposalRef:
     """Write a fetched artifact's provenance into evidence-ledger as an UNTRUSTED, UNGRADED proposal
     (source_channel='ingested'). The analyst must confirm + grade it before ach-engine will score it (finding B).
-    `note` is untrusted content: length-capped and never scored — a system annotation, not a judgment."""
+    `note` is untrusted content: length-capped and never scored — a system annotation, not a judgment.
+
+    osint-toolkit is NOT itself a ledger writer (evidence.db is single-writer, owned by evidence-ledger); this
+    routes the proposal to evidence-ledger over the MCP boundary. Requires EVIDENCE_LEDGER_URL to be configured
+    (else it fails closed rather than forking the append-only ledger)."""
     try:
-        sha = artifacts.compute_hash(artifact_ref)  # validates the token
+        sha = artifacts.compute_hash(artifact_ref)  # validates the token (LOCAL, no egress)
     except ArtifactError as e:
         raise ToolError(str(e)) from e
-    item = f"[OSINT ingested] artifact={artifact_ref} sha256={sha} | note(unverified): {note[:NOTE_CAP]}"
-    ref = _evidence.add_evidence(case_id, item, source_id, "report", pii, "ingested")
-    return ProposalRef(evidence_id=ref.evidence_id, case_id=case_id)
+    client = _ledger_client()
+    if client is None:
+        raise ToolError(
+            "propose_to_ledger requires a configured evidence-ledger connection (set EVIDENCE_LEDGER_URL); "
+            "osint-toolkit is not itself a ledger writer (evidence.db is single-writer)."
+        )
+    item = f"[OSINT ingested] artifact={artifact_ref} sha256={sha} | note(unverified): {note}"
+    try:
+        async with client as c:
+            res = await c.call_tool(
+                "add_evidence",
+                {
+                    "case_id": case_id, "item": item, "source_id": source_id,
+                    "evidence_type": "report", "pii": pii, "source_channel": "ingested",
+                },
+            )
+    except ToolError:
+        raise  # a business-rule rejection from evidence-ledger (e.g. size cap) — surface it verbatim
+    except Exception as e:  # noqa: BLE001 - surfaced as a clear tool error, never a raw internal leak
+        # S1: do not re-embed raw str(e) (transport/URL/host detail) into a client-visible ToolError — that
+        # bypasses the mask_error_details invariant. Log the detail to stderr; return a fixed reason code.
+        print(f"[osint-toolkit] evidence-ledger proposal transport error: {e!r}", file=sys.stderr)
+        raise ToolError("evidence-ledger proposal failed (transport error; details in the server log only)") from e
+    # S2: the ledger response may lack structured content on schema drift / partial success — deref would raise
+    # AttributeError (masked to an opaque error). Fail with a clear reason instead.
+    if res.data is None:
+        raise ToolError("evidence-ledger returned an unexpected response shape (no structured content)")
+    return ProposalRef(evidence_id=res.data.evidence_id, case_id=case_id)
 
 
 @mcp.tool
@@ -181,11 +317,54 @@ def verify_chain() -> ChainStatus:
     return audit.verify_chain()
 
 
+def _ledger_url_is_local(url: str) -> bool:
+    """S8: True if EVIDENCE_LEDGER_URL points at loopback / this box. propose_to_ledger routes case/source ids +
+    note to this URL WITHOUT the _screen / validate_url / audit egress controls, so a misconfigured or hostile
+    env var would silently exfiltrate off-box. A non-literal DNS host cannot be classified safely here → treat
+    it as remote (fail closed) unless the operator opts in via OSINT_LEDGER_ALLOW_REMOTE=1."""
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    host = urlsplit(url).hostname or ""
+    if host in ("localhost", "localhost.localdomain", ""):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False  # a DNS name — cannot verify it stays on-box
+
+
 def main() -> None:
     st = audit.verify_chain()
     if not st.ok:
         print(f"[osint-toolkit] REFUSING TO SERVE — egress audit chain failed: {st.mismatch}", file=sys.stderr)
         raise SystemExit(1)
+    # S8: propose_to_ledger's route to EVIDENCE_LEDGER_URL is UNSCREENED + UNAUDITED. Fail closed if it is not
+    # a loopback target, unless the operator explicitly opts in to a remote ledger.
+    if EVIDENCE_LEDGER_URL and not _ledger_url_is_local(EVIDENCE_LEDGER_URL):
+        if os.environ.get("OSINT_LEDGER_ALLOW_REMOTE") != "1":
+            print(
+                "[osint-toolkit] REFUSING TO SERVE — EVIDENCE_LEDGER_URL is not a loopback target; "
+                "propose_to_ledger would route case/source ids off-box unscreened and unaudited. "
+                "Set OSINT_LEDGER_ALLOW_REMOTE=1 to intentionally allow a remote ledger.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
+    # S11: control #7a (the pre-egress exfil screen) is inert when no identifiers are configured. Fail closed
+    # rather than serve LIVE egress while the operator believes the screen is active.
+    if OSINT_LIVE and not CASE_IDENTIFIERS:
+        print(
+            "[osint-toolkit] REFUSING TO SERVE — OSINT_LIVE=1 but OSINT_CASE_IDENTIFIERS is empty; the "
+            "pre-egress exfiltration screen (control #7a) would block nothing.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if not CASE_IDENTIFIERS:
+        print(
+            "[osint-toolkit] WARNING: OSINT_CASE_IDENTIFIERS is empty — the pre-egress exfiltration screen "
+            "(control #7a) will not block any identifier.",
+            file=sys.stderr,
+        )
     live = "LIVE egress ON" if OSINT_LIVE else "live egress OFF (guard/gate/audit only)"
     print(f"[osint-toolkit] audit chain OK ({st.rows_verified} rows); {live}; serving on stdio", file=sys.stderr)
     mcp.run()

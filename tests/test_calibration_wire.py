@@ -40,6 +40,7 @@ async def _run() -> None:
             },
         )
         fid = res.data.forecast_id
+        locked_at = res.data.locked_at
         assert fid
 
         # error channel: model_draft is rejected as a ToolError, not a silent bad result
@@ -58,7 +59,7 @@ async def _run() -> None:
 
         # resolve + report round-trips through the wire
         await client.call_tool(
-            "resolve_forecast", {"forecast_id": fid, "outcome": True, "resolved_at": "2026-01-01"}
+            "resolve_forecast", {"forecast_id": fid, "outcome": True, "resolved_at": locked_at}
         )
         rep = await client.call_tool("get_calibration_report", {"case_id": "w"})
         assert rep.data.n == 1

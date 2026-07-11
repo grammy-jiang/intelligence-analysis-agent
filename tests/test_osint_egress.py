@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import socket
+import ssl
+
 import pytest
 
+from mcp_servers.osint_toolkit import egress as eg
 from mcp_servers.osint_toolkit.egress import EgressError, validate_url
 
 
@@ -90,3 +94,51 @@ def test_valid_public_host_pins_ip():
 def test_valid_public_ip_literal():
     host, ip = validate_url("https://93.184.216.34")
     assert ip == "93.184.216.34"
+
+
+# --- MF3: nonstandard ports are rejected (not silently substituted with 443) ---
+@pytest.mark.parametrize("url", ["https://good.com:8443/x", "https://93.184.216.34:8080"])
+def test_nonstandard_port_rejected(url):
+    with pytest.raises(EgressError, match="port not allowed"):
+        validate_url(url, allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["93.184.216.34"]}))
+
+
+def test_explicit_443_allowed():
+    host, ip = validate_url(
+        "https://good.com:443/x", allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["93.184.216.34"]})
+    )
+    assert host == "good.com" and ip == "93.184.216.34"
+
+
+# --- S10: resolver failures beyond gaierror stay inside the EgressError taxonomy (return no IPs) ---
+@pytest.mark.parametrize("exc", [socket.gaierror("x"), UnicodeError("idna"), OSError("name svc")])
+def test_default_resolver_swallows_resolution_errors(monkeypatch, exc):
+    def boom(*a, **k):
+        raise exc
+
+    monkeypatch.setattr(eg.socket, "getaddrinfo", boom)
+    assert eg._default_resolver("xn--broken.example") == []
+    # and the guard converts "no IPs" to a fail-closed EgressError, never a raw UnicodeError/OSError
+    with pytest.raises(EgressError, match="no DNS"):
+        validate_url("https://good.com", allowed_hosts={"good.com"}, resolver=eg._default_resolver)
+
+
+# --- M4: a TLS handshake failure must close the underlying socket (no fd leak) ---
+def test_pinned_get_closes_socket_on_tls_failure(monkeypatch):
+    class FakeSock:
+        def __init__(self) -> None:
+            self.closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeSock()
+    monkeypatch.setattr(eg.socket, "create_connection", lambda *a, **k: fake)
+
+    def bad_wrap(self, sock, server_hostname=None):
+        raise ssl.SSLError("handshake failed")
+
+    monkeypatch.setattr(ssl.SSLContext, "wrap_socket", bad_wrap)
+    with pytest.raises(ssl.SSLError):
+        eg._pinned_https_get("good.com", "93.184.216.34", "https://good.com/x")
+    assert fake.closed is True  # raw socket released despite the handshake failure

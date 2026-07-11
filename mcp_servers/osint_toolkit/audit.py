@@ -3,7 +3,9 @@ a field not listed is never logged, so a future secret-bearing field can't leak 
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import threading
 
 from ..common import GENESIS, ChainMismatch, ChainStatus, now_iso, row_hash
 
@@ -19,7 +21,12 @@ LOGGABLE_FIELDS = {
 
 class EgressAudit:
     def __init__(self, db_path: str):
-        self._conn = sqlite3.connect(db_path)
+        # S14: check_same_thread=False to match every sibling store — FastMCP may dispatch a tool body on a
+        # worker thread. All writes are serialized by self._lock (S15), so this cannot race.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # S15: serialize the head-read -> hash -> INSERT -> commit sequence so two concurrent egress calls
+        # cannot read the same prev_hash and fork the append-only chain (mirrors EvidenceStore._write_lock).
+        self._lock = threading.Lock()
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.row_factory = sqlite3.Row
         self._conn.execute(
@@ -40,22 +47,19 @@ class EgressAudit:
     def record(self, tool: str, fields: dict, resolved_ip: str, outcome: str) -> None:
         allow = LOGGABLE_FIELDS.get(tool, ())
         logged = {k: fields[k] for k in allow if k in fields}  # fail-closed allowlist
-        payload = {"tool": tool, "fields": logged, "resolved_ip": resolved_ip, "outcome": outcome,
-                   "at": now_iso()}
-        prev = self._head()
-        rh = row_hash(prev, payload)
-        import json
-
-        self._conn.execute(
-            "INSERT INTO egress_log(tool, fields, resolved_ip, outcome, at, prev_hash, row_hash) "
-            "VALUES(?,?,?,?,?,?,?)",
-            (tool, json.dumps(logged, sort_keys=True), resolved_ip, outcome, payload["at"], prev, rh),
-        )
-        self._conn.commit()
+        with self._lock:  # S15: whole head-read -> INSERT -> commit is atomic vs other writers
+            payload = {"tool": tool, "fields": logged, "resolved_ip": resolved_ip, "outcome": outcome,
+                       "at": now_iso()}
+            prev = self._head()
+            rh = row_hash(prev, payload)
+            self._conn.execute(
+                "INSERT INTO egress_log(tool, fields, resolved_ip, outcome, at, prev_hash, row_hash) "
+                "VALUES(?,?,?,?,?,?,?)",
+                (tool, json.dumps(logged, sort_keys=True), resolved_ip, outcome, payload["at"], prev, rh),
+            )
+            self._conn.commit()
 
     def verify_chain(self) -> ChainStatus:
-        import json
-
         prev = GENESIS
         verified = 0
         for r in self._conn.execute("SELECT * FROM egress_log ORDER BY seq ASC").fetchall():

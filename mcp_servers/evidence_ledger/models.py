@@ -27,6 +27,7 @@ class Grade(BaseModel):
     reliability: Reliability
     credibility: Credibility
     diagnosticity: str  # narrative only — does NOT feed score_matrix
+    analyst_id: str  # MF6: WHO made this judgment — a trusted local binding, folded into the row hash
     judgment_source: JudgmentSource
     rationale: str = ""
     reason: str = ""
@@ -56,6 +57,6 @@ class SourceHistory(BaseModel):
     source_id: str
     cases: list[str]
     grade_sequence: list[str]  # reliability letters of analyst_confirmed grades, in order
-    last_change_direction: str  # improved | worsened | same | n/a
+    last_change_direction: Literal["improved", "worsened", "same", "n/a"]
     n: int
     n_model_draft_excluded: int

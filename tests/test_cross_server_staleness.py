@@ -53,20 +53,23 @@ def test_grade_change_blocks_scoring_until_rerated(tmp_path):
 
 
 def test_score_refuses_ungraded_evidence(tmp_path):
-    """collect-then-grade (finding B): evidence rated in ach but never analyst_confirmed-graded in
-    evidence-ledger cannot be scored — an ingested/ungraded artifact never reaches scored output."""
+    """collect-then-grade (finding B): evidence whose out-of-band grade is not analyst_confirmed cannot
+    be scored — an ingested/ungraded artifact never reaches scored output. The score-time gate is
+    exercised via a later downgrade; M4 additionally blocks the analyst_confirmed rating up front (see
+    test_rate_confirmed_requires_out_of_band_grade)."""
     clk = Clock()
     st = StalenessStore(str(tmp_path / "stale.db"), clock=clk)
     ach = ACHStore(str(tmp_path / "ach.db"), st, analyst_id="t", clock=clk)
     try:
         ref = ach.create_matrix("c", ["H1", "H2"])
-        h1 = ref.hypotheses[0].hypothesis_id
-        ach.rate_cell(ref.matrix_id, "E_ungraded", h1, "I", "strong", "analyst_confirmed")
-        with pytest.raises(ACHError, match="not analyst_confirmed-graded"):
-            ach.score_matrix(ref.matrix_id)
-        st.mark_graded("E_ungraded", "analyst_confirmed")  # now graded
+        h1, h2 = ref.hypotheses[0].hypothesis_id, ref.hypotheses[1].hypothesis_id
+        st.mark_graded("E1", "analyst_confirmed")  # out-of-band confirmation (M4 precondition)
+        # MF1: rate E1 against BOTH hypotheses — a full-coverage matrix is required before scoring, so
+        # the score-time grade gate below is exercised on its own merit, not on a coverage gap.
+        ach.rate_cell(ref.matrix_id, "E1", h1, "I", "strong", "analyst_confirmed")
+        ach.rate_cell(ref.matrix_id, "E1", h2, "C", "weak", "analyst_confirmed")
         assert ach.score_matrix(ref.matrix_id).leading is not None
-        st.mark_graded("E_ungraded", "model_draft")  # downgraded (latest signal wins)
+        st.mark_graded("E1", "model_draft")  # downgraded (latest signal wins) -> score-time gate fires
         with pytest.raises(ACHError, match="not analyst_confirmed-graded"):
             ach.score_matrix(ref.matrix_id)
     finally:
