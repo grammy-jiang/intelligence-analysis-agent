@@ -190,6 +190,31 @@ def test_resolved_at_must_be_iso(store):
         store.resolve_forecast(ref.forecast_id, True, "not-a-date")
 
 
+# --- hindsight-auditability ADVISORY: resolved_before_horizon flags early resolutions vs a stated, ---
+# PARSEABLE horizon. It is an audit SIGNAL for human review, NOT a hard gate: early resolution is
+# legitimate, a free-form horizon is skipped, and the report never crashes on a non-date horizon. Nothing
+# here is blocked or excluded from Brier — the hard anti-hindsight controls are the lock + anti-backdate.
+def test_resolved_before_horizon_advisory(store):
+    # Two GENUINE early resolutions: parseable FUTURE horizon, resolved at lock time (now << 2999) -> count.
+    for q in ("early1?", "early2?"):
+        f = store.log_forecast("h", q, 0.5, "def", "2999-12-31", "analyst_confirmed")
+        store.resolve_forecast(f.forecast_id, True, f.locked_at)
+    # Free-form (non-date) horizon: must NOT crash the report, and is skipped (never counted).
+    ff = store.log_forecast("h", "freeform?", 0.5, "def", "end of Q2", "analyst_confirmed")
+    store.resolve_forecast(ff.forecast_id, True, ff.locked_at)
+    # Parseable PAST horizon, resolved after it (now >> 2000): on/after -> not counted.
+    late = store.log_forecast("h", "late?", 0.5, "def", "2000-01-01", "analyst_confirmed")
+    store.resolve_forecast(late.forecast_id, True, late.locked_at)
+    # resolved_at EXACTLY == a future horizon: the boundary is STRICTLY-before -> not counted
+    # (pins `<`; a `<=` mutation would wrongly count this one).
+    dot = store.log_forecast("h", "ondot?", 0.5, "def", "2999-12-31", "analyst_confirmed")
+    store.resolve_forecast(dot.forecast_id, True, "2999-12-31")
+    r = store.get_calibration_report(case_id="h")
+    assert r.n == 5  # every forecast is still scored; the advisory NEVER excludes one from Brier
+    # Only the two genuine earlies count: free-form is skipped, the past-horizon and on-the-dot ones do not.
+    assert r.resolved_before_horizon == 2
+
+
 # --- S2: malformed pagination cursor is a business error, not a raw ValueError leak ---
 def test_bad_cursor_rejected(store):
     _log(store)
