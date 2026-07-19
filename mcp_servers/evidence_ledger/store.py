@@ -12,7 +12,7 @@ import threading
 import uuid
 from typing import Literal
 
-from ..common import GENESIS, ChainMismatch, ChainStatus, now_iso, row_hash
+from ..common import GENESIS, ChainMismatch, ChainStatus, Manifest, now_iso, row_hash
 from ..staleness import StalenessStore
 from .models import (
     RELIABILITY_ORDER,
@@ -95,8 +95,8 @@ class EvidenceStore:
             """
         )
         self._conn.commit()
-        # MF3: tail of the self-chained external manifest, read once at open.
-        self._manifest_head = self._read_manifest_head()
+        # MF3: the shared external tamper-evidence anchor (per-table head + monotonic append count).
+        self._manifest = Manifest(self.manifest_path, _TABLES)
 
     def _acquire_process_lock(self, db_path: str) -> None:
         lock_path = db_path + ".lock"
@@ -126,50 +126,19 @@ class EvidenceStore:
         ).fetchone()
         return r["row_hash"] if r else GENESIS
 
-    # ---- external manifest (MF3: anchor against tail-truncation / whole-chain reset) ----------------
-    def _read_manifest_head(self) -> str:
-        """Last manifest_hash on disk (GENESIS if no manifest yet) — the tail of the self-chain."""
-        if not self.manifest_path or not os.path.exists(self.manifest_path):
-            return GENESIS
-        last = GENESIS
-        with open(self.manifest_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    last = json.loads(line).get("manifest_hash", GENESIS)
-        return last
-
-    def _append_manifest(self, table: str, head: str) -> None:
-        # Self-chained + fsync'd external attestation of each per-table head. Each line binds to the
-        # previous manifest line's hash, so a mid-file line cannot be edited or dropped undetected;
-        # whole-file / whole-table deletion is caught fail-closed by _check_manifest's presence check.
-        # Residual risk (documented, SF4): the manifest shares the DB's trust domain, so an attacker with
-        # filesystem write can recompute the self-chain in lockstep — durable tamper-evidence needs these
-        # heads shipped to a separate append-only/WORM log.
-        if not self.manifest_path:
-            return
-        payload = {"table": table, "head": head, "at": now_iso()}
-        mh = row_hash(self._manifest_head, payload)
-        entry = {**payload, "prev_manifest_hash": self._manifest_head, "manifest_hash": mh}
-        with open(self.manifest_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        self._manifest_head = mh
-
+    # ---- external manifest (MF3: shared head+count tamper-evidence anchor — see common.Manifest) --------
     def seed_manifest_baseline(self) -> int:
-        """One-time migration: attest the current per-table heads for a DB that predates the manifest.
-        Trust-on-first-use — only meaningful when no manifest exists yet. Returns entries written."""
-        if not self.manifest_path or os.path.exists(self.manifest_path):
-            return 0
-        written = 0
+        """One-time migration for a DB predating the manifest — attest current per-table (head, count).
+        Trust-on-first-use; no-op if a manifest already exists. Returns entries written."""
         with self._write_lock:
-            for table in _TABLES:
-                head = self._head(table)
-                if head != GENESIS:
-                    self._append_manifest(table, head)
-                    written += 1
-        return written
+            heads = {t: self._head(t) for t in _TABLES}
+            counts = {
+                t: self._conn.execute(
+                    f"SELECT COUNT(*) c FROM {t}"  # noqa: S608 - internal literal from _TABLES
+                ).fetchone()["c"]
+                for t in _TABLES
+            }
+            return self._manifest.seed(heads, counts)
 
     # ---- evidence ----------------------------------------------------------
     def add_evidence(
@@ -223,7 +192,7 @@ class EvidenceStore:
                         json.dumps(expected_observables, sort_keys=True), int(bool(pii)), prev, rh,
                     ),
                 )
-            self._append_manifest("evidence", rh)
+            self._manifest.append("evidence", rh)
         return EvidenceRef(evidence_id=evidence_id, case_id=case_id, pii=bool(pii))
 
     def _evidence_row(self, evidence_id: str) -> sqlite3.Row:
@@ -309,7 +278,7 @@ class EvidenceStore:
                         rationale, reason, graded_at, prev, rh,
                     ),
                 )
-            self._append_manifest("grades", rh)
+            self._manifest.append("grades", rh)
             # cross-server signals: a (re)grade marks dependent ACH cells stale, and records the grade's
             # judgment_source so ach-engine can refuse to score evidence that was never analyst_confirmed.
             self._mark_staleness_signals(evidence_id, judgment_source)
@@ -421,9 +390,11 @@ class EvidenceStore:
         # the lock (none today) would not deadlock. seed_manifest_baseline already locks the same way.
         with self._write_lock:
             heads: dict[str, str] = {}
+            counts: dict[str, int] = {}
             verified = 0
             for table in _TABLES:
                 prev = GENESIS
+                count = 0
                 rows = self._conn.execute(
                     f"SELECT * FROM {table} ORDER BY seq ASC"  # noqa: S608 - internal literal
                 ).fetchall()
@@ -440,63 +411,24 @@ class EvidenceStore:
                             ),
                         )
                     prev = r["row_hash"]
+                    count += 1
                     verified += 1
                 heads[table] = prev
-            # MF3: DB head must match the last manifest entry per table (catches tail-truncation /
-            # whole-chain reset that leaves the surviving rows internally self-consistent).
-            manifest_ok, mismatch = self._check_manifest(heads)
+                counts[table] = count
+            # MF3: delegate head+count reconciliation + the manifest self-chain walk to the shared helper
+            # (catches tail-truncation / whole-chain reset that leaves surviving rows self-consistent).
+            ok, mm = self._manifest.check(heads, counts)
+            mismatch = (
+                ChainMismatch(
+                    table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                )
+                if mm is not None
+                else None
+            )
             return ChainStatus(
-                server="evidence-ledger", scope="all", ok=manifest_ok, head_hash=heads,
+                server="evidence-ledger", scope="all", ok=ok, head_hash=heads,
                 rows_verified=verified, mismatch=mismatch,
             )
-
-    def _check_manifest(self, heads: dict[str, str]) -> tuple[bool, ChainMismatch | None]:
-        # In-memory stores have no manifest by design (nothing to attest).
-        if not self.manifest_path:
-            return True, None
-        # Any table whose DB chain is non-empty MUST be attested by the manifest; a missing manifest file
-        # — or a missing per-table entry — is treated fail-closed as tampering, NOT a vacuous pass. This is
-        # what catches whole-chain / whole-table deletion of both the rows and the file.
-        non_genesis = {t for t in _TABLES if heads.get(t, GENESIS) != GENESIS}
-        if not os.path.exists(self.manifest_path):
-            if non_genesis:
-                table = sorted(non_genesis)[0]
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest-missing>",
-                    expected_hash=heads.get(table, GENESIS), got_hash=GENESIS,
-                )
-            return True, None
-        # Walk the manifest, verifying its own hash-chain so a mid-file line cannot be edited/dropped
-        # undetected, and collect the last attested head per table.
-        last: dict[str, str] = {}
-        prev = GENESIS
-        with open(self.manifest_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                e = json.loads(line)
-                expected = row_hash(prev, {"table": e["table"], "head": e["head"], "at": e["at"]})
-                if e.get("prev_manifest_hash") != prev or e.get("manifest_hash") != expected:
-                    return False, ChainMismatch(
-                        table=e.get("table", "?"), row_id="<manifest-chain>",
-                        expected_hash=expected, got_hash=str(e.get("manifest_hash", "")),
-                    )
-                prev = expected
-                last[e["table"]] = e["head"]
-        for table in non_genesis:
-            if table not in last:
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest-missing-table>",
-                    expected_hash=heads.get(table, GENESIS), got_hash=GENESIS,
-                )
-        for table, mhead in last.items():
-            dbhead = heads.get(table, GENESIS)
-            if dbhead != mhead:
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest>", expected_hash=mhead, got_hash=dbhead
-                )
-        return True, None
 
     def _payload_for(self, table: str, r: sqlite3.Row) -> dict:
         if table == "evidence":

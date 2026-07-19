@@ -7,7 +7,6 @@ any stale or model_draft cell, enumerating the blockers.
 
 from __future__ import annotations
 
-import json
 import os
 import sqlite3
 import threading
@@ -16,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
-from ..common import GENESIS, ChainMismatch, ChainStatus, now_iso, row_hash
+from ..common import GENESIS, ChainMismatch, ChainStatus, Manifest, now_iso, row_hash
 from ..staleness import StalenessStore
 from .models import (
     Cell,
@@ -95,9 +94,9 @@ class ACHStore:
         )
         self._conn.commit()
         self._restrict_perms()
-        # M-manifest: tail of the self-chained manifest, read once at open so appends after a restart
-        # continue the chain (each line binds to the previous line's hash — a mid-file edit is detectable).
-        self._manifest_head = self._read_manifest_head()
+        # M-manifest: the shared external tamper-evidence anchor (per-table head + monotonic append count),
+        # read once at open so appends after a restart continue the self-chain.
+        self._manifest = Manifest(self.manifest_path, _TABLES)
 
     def _restrict_perms(self) -> None:
         # MF5/N8: the unkeyed SHA-256 chain's tamper-evidence rests on OS file isolation — keep the
@@ -125,84 +124,18 @@ class ACHStore:
         ).fetchone()
         return r["row_hash"] if r else GENESIS
 
-    def _read_manifest_head(self) -> str:
-        """Last manifest_hash on disk (GENESIS if no manifest yet) — the tail of the self-chain."""
-        if not self.manifest_path or not os.path.exists(self.manifest_path):
-            return GENESIS
-        last = GENESIS
-        with open(self.manifest_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    last = json.loads(line).get("manifest_hash", GENESIS)
-        return last
-
-    def _append_manifest(self, table: str, head: str) -> None:
-        if not self.manifest_path:
-            return
-        # M-manifest: SELF-CHAIN each line to the previous line's hash (backport of the calibration/
-        # evidence-ledger manifest self-chaining) so a MIDDLE manifest line cannot be edited or dropped
-        # undetected — the per-table head+count reconciliation alone misses an edit to a non-terminal line.
-        # MF5/N8: create the manifest private (0o600) — it anchors the tamper-evidence reconciliation, so a
-        # co-resident writer must not read/rewrite it. O_CREAT mode applies on creation. Residual (SF4): the
-        # manifest shares the DB's trust domain, so an actor with filesystem write can recompute the whole
-        # self-chain in lockstep — durable tamper-evidence needs these heads shipped to an off-host WORM log.
-        payload = {"table": table, "head": head, "at": now_iso()}
-        mh = row_hash(self._manifest_head, payload)
-        entry = {**payload, "prev_manifest_hash": self._manifest_head, "manifest_hash": mh}
-        fd = os.open(self.manifest_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-        with os.fdopen(fd, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-        self._manifest_head = mh
-
-    def _check_manifest(
-        self, heads: dict[str, str], counts: dict[str, int]
-    ) -> tuple[bool, ChainMismatch | None]:
-        """Reconcile the live tables against the manifest AND verify the manifest's own self-chain.
-
-        M2: trailing-row truncation leaves a self-consistent but shorter chain; the per-table head +
-        append-count anchor catches it. The self-chain walk additionally catches an edit to any non-terminal
-        manifest line. A non-empty table with no manifest file at all fails closed (not a vacuous pass).
-        """
-        if not self.manifest_path:  # in-memory stores have no manifest by design
-            return True, None
-        non_genesis = {t for t in _TABLES if heads.get(t, GENESIS) != GENESIS}
-        if not os.path.exists(self.manifest_path):
-            if non_genesis:
-                table = sorted(non_genesis)[0]
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest-missing>",
-                    expected_hash=heads.get(table, GENESIS), got_hash=GENESIS,
-                )
-            return True, None
-        last: dict[str, str] = {}
-        last_count: dict[str, int] = {}
-        prev = GENESIS
-        with open(self.manifest_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                e = json.loads(line)
-                payload = {"table": e["table"], "head": e["head"], "at": e["at"]}
-                expected = row_hash(prev, payload)
-                if e.get("prev_manifest_hash") != prev or e.get("manifest_hash") != expected:
-                    return False, ChainMismatch(
-                        table=e.get("table", "?"), row_id="<manifest-chain>",
-                        expected_hash=expected, got_hash=str(e.get("manifest_hash", "")),
-                    )
-                prev = expected
-                last[e["table"]] = e["head"]
-                last_count[e["table"]] = last_count.get(e["table"], 0) + 1
-        for table in _TABLES:
-            m_head, m_count = last.get(table, GENESIS), last_count.get(table, 0)
-            if m_head != heads[table] or m_count != counts[table]:
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest>",
-                    expected_hash=f"{m_head} (manifest: {m_count} rows)",
-                    got_hash=f"{heads[table]} (tables: {counts[table]} rows)",
-                )
-        return True, None
+    def seed_manifest_baseline(self) -> int:
+        """One-time migration for a DB predating the manifest — attest current per-table (head, count).
+        Trust-on-first-use; no-op if a manifest already exists. Returns entries written."""
+        with self._write_lock:
+            heads = {t: self._head(t) for t in _TABLES}
+            counts = {
+                t: self._conn.execute(
+                    f"SELECT COUNT(*) c FROM {t}"  # noqa: S608 - internal literal from _TABLES
+                ).fetchone()["c"]
+                for t in _TABLES
+            }
+            return self._manifest.seed(heads, counts)
 
     # ---- matrix / hypotheses ----------------------------------------------
     def create_matrix(self, case_id: str, hypotheses: list[str]) -> MatrixRef:
@@ -233,7 +166,7 @@ class ACHStore:
                     _, h_rh = self._insert_hypothesis(matrix_id, text)
                     appends.append(("hypotheses", h_rh))
             for table, head in appends:
-                self._append_manifest(table, head)
+                self._manifest.append(table, head)
         return self.get_matrix_ref(matrix_id)
 
     def _insert_hypothesis(self, matrix_id: str, text: str) -> tuple[str, str]:
@@ -259,7 +192,7 @@ class ACHStore:
         with self._write_lock:
             with self._conn:
                 _, rh = self._insert_hypothesis(matrix_id, hypothesis)
-            self._append_manifest("hypotheses", rh)  # M3: after commit
+            self._manifest.append("hypotheses", rh)  # M3: after commit
         return self.get_matrix_ref(matrix_id)
 
     def _matrix_row(self, matrix_id: str) -> sqlite3.Row:
@@ -370,7 +303,7 @@ class ACHStore:
                         judgment_source, reason, rated_at, rated_ts, prev, rh,
                     ),
                 )
-            self._append_manifest("cells", rh)  # after commit
+            self._manifest.append("cells", rh)  # after commit
         return CellRecord(
             matrix_id=matrix_id, evidence_id=evidence_id, hypothesis_id=hypothesis_id,
             # domains are enforced above (raise on out-of-domain), so these casts are sound, not blind.
@@ -525,14 +458,15 @@ class ACHStore:
                 heads[table] = prev
                 counts[table] = count
 
-            # M2/M-manifest: reconcile the live tables against the manifest AND verify the manifest self-chain
-            # (catches trailing-row truncation via head+count, and a non-terminal manifest-line edit via the
-            # self-chain walk). Truncating the last N rows leaves a self-consistent shorter chain otherwise.
-            manifest_ok, mismatch = self._check_manifest(heads, counts)
-            if not manifest_ok:
+            # M2/M-manifest: delegate head+count reconciliation + the manifest self-chain walk to the shared
+            # helper (catches trailing-row truncation and a non-terminal manifest-line edit).
+            ok, mm = self._manifest.check(heads, counts)
+            if not ok and mm is not None:
                 return ChainStatus(
-                    server="ach-engine", scope="all", ok=False, head_hash=heads,
-                    rows_verified=verified, mismatch=mismatch,
+                    server="ach-engine", scope="all", ok=False, head_hash=heads, rows_verified=verified,
+                    mismatch=ChainMismatch(
+                        table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                    ),
                 )
             return ChainStatus(
                 server="ach-engine", scope="all", ok=True, head_hash=heads, rows_verified=verified

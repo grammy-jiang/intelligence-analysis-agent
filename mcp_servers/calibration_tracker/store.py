@@ -21,6 +21,7 @@ import time
 import uuid
 from datetime import date, datetime, timezone
 
+from ..common import Manifest
 from .models import (
     Bucket,
     CalibrationReport,
@@ -101,8 +102,8 @@ class CalibrationStore:
             raise ForecastError(f"could not enable WAL journal mode (got {mode!r}); refusing to run.")
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
-        # M2: the manifest tail hash + the last attested per-table row count (the truncation anchor).
-        self._manifest_head, self._manifest_counts = self._read_manifest_state()
+        # M2: the shared external tamper-evidence anchor (per-table head + monotonic append count).
+        self._manifest = Manifest(self.manifest_path, _TABLES)
 
     def _acquire_process_lock(self, db_path: str) -> None:
         lock_path = db_path + ".lock"
@@ -156,78 +157,18 @@ class CalibrationStore:
         ).fetchone()
         return row["row_hash"] if row else GENESIS
 
-    def _read_manifest_state(self) -> tuple[str, dict[str, int]]:
-        """Last manifest_hash (tail of the self-chain) + the last attested per-table row count on disk.
-        GENESIS + {} if no manifest yet. M2: the counts feed verify_chain's tail-truncation anchor."""
-        counts: dict[str, int] = {}
-        if not self.manifest_path or not os.path.exists(self.manifest_path):
-            return GENESIS, counts
-        last = GENESIS
-        seen: set[str] = set()  # tables with ANY manifest entry
-        has_count: set[str] = set()  # tables with at least one "count"-bearing entry
-        with open(self.manifest_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                e = json.loads(line)
-                last = e.get("manifest_hash", GENESIS)
-                seen.add(e["table"])
-                if "count" in e:
-                    counts[e["table"]] = e["count"]
-                    has_count.add(e["table"])
-        # M2 count-migration: a PRE-count manifest (entries lacking "count") would otherwise seed the next
-        # append's running count from 0 — so the following write attests count=1 while the live table already
-        # holds N rows, a FALSE verify_chain tamper on upgrade. Seed the running count from the live table's
-        # actual row count for any table that has manifest entries but never carried a "count".
-        for table in seen - has_count:
-            if table in _TABLES:  # ignore an unknown/forged table name (the self-chain check catches that)
-                counts[table] = self._conn.execute(
-                    f"SELECT COUNT(*) c FROM {table}"  # noqa: S608 - table is an internal literal from _TABLES
-                ).fetchone()["c"]
-        return last, counts
-
-    def _append_manifest(self, table: str, head: str, count: int | None = None) -> None:
-        # Self-chained + fsync'd external attestation of each per-table head. Each line binds to the
-        # previous manifest line's hash, so a mid-file line cannot be edited or dropped undetected;
-        # a whole-file/whole-table deletion is caught by _check_manifest's fail-closed presence check.
-        # Residual risk (documented): the manifest shares the DB's trust domain, so an attacker with
-        # filesystem write can recompute the entire self-chain in lockstep — durable tamper-evidence
-        # requires shipping these heads to a separate append-only/WORM log.
-        if not self.manifest_path:
-            return
-        at = _now_iso()
-        # M2: attest a monotonic per-table row count alongside the head. Normal per-row appends increment it;
-        # seed_manifest_baseline passes the true current count. `count` is inside the hashed payload, so it is
-        # covered by the manifest self-chain and cannot be edited without breaking it.
-        if count is None:
-            count = self._manifest_counts.get(table, 0) + 1
-        payload = {"table": table, "head": head, "at": at, "count": count}
-        mh = _row_hash(self._manifest_head, payload)
-        entry = {**payload, "prev_manifest_hash": self._manifest_head, "manifest_hash": mh}
-        with open(self.manifest_path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        self._manifest_head = mh
-        self._manifest_counts[table] = count
-
     def seed_manifest_baseline(self) -> int:
-        """One-time migration: attest the current per-table heads for a DB that predates the manifest.
-        Trust-on-first-use — only meaningful when no manifest exists yet. Returns entries written."""
-        if not self.manifest_path or os.path.exists(self.manifest_path):
-            return 0
-        written = 0
+        """One-time migration for a DB predating the manifest — attest current per-table (head, count).
+        Trust-on-first-use; no-op if a manifest already exists. Returns entries written."""
         with self._write_lock:
-            for table in _TABLES:
-                head = self._head(table)
-                if head != GENESIS:
-                    n = self._conn.execute(
-                        f"SELECT COUNT(*) c FROM {table}"  # noqa: S608 - table is an internal literal
-                    ).fetchone()["c"]
-                    self._append_manifest(table, head, count=n)  # M2: seed the true row count
-                    written += 1
-        return written
+            heads = {t: self._head(t) for t in _TABLES}
+            counts = {
+                t: self._conn.execute(
+                    f"SELECT COUNT(*) c FROM {t}"  # noqa: S608 - internal literal from _TABLES
+                ).fetchone()["c"]
+                for t in _TABLES
+            }
+            return self._manifest.seed(heads, counts)
 
     # ---- forecast lifecycle ------------------------------------------------
     def log_forecast(
@@ -312,7 +253,7 @@ class CalibrationStore:
             except Exception:
                 self._conn.rollback()
                 raise
-            self._append_manifest("forecasts", rh)
+            self._manifest.append("forecasts", rh)
             return self.get_forecast(forecast_id)
 
     def _forecast_row(self, forecast_id: str) -> sqlite3.Row:
@@ -401,7 +342,7 @@ class CalibrationStore:
             except Exception:
                 self._conn.rollback()
                 raise
-            self._append_manifest("resolutions", rh)
+            self._manifest.append("resolutions", rh)
         return self.get_forecast(forecast_id)
 
     def void_forecast(self, forecast_id: str, reason: str) -> ForecastRecord:
@@ -433,7 +374,7 @@ class CalibrationStore:
             except Exception:
                 self._conn.rollback()
                 raise
-            self._append_manifest("voids", rh)
+            self._manifest.append("voids", rh)
         return self.get_forecast(forecast_id)
 
     def _correction_count(self, forecast_id: str) -> int:
@@ -635,11 +576,18 @@ class CalibrationStore:
                     verified += 1
                 heads[table] = prev
                 counts[table] = count
-            # External manifest check: DB head AND row count must match the last manifest entry per table
-            # (catches whole-chain deletion and trailing-row truncation of a self-consistent shorter chain).
-            manifest_ok, mismatch = self._check_manifest(heads, counts)
+            # External manifest check via the shared helper: DB head AND row count must match the last
+            # manifest entry per table (catches whole-chain deletion + trailing-row truncation).
+            ok, mm = self._manifest.check(heads, counts)
+            mismatch = (
+                ChainMismatch(
+                    table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                )
+                if mm is not None
+                else None
+            )
             return ChainStatus(
-                server="calibration-tracker", scope="all", ok=manifest_ok,
+                server="calibration-tracker", scope="all", ok=ok,
                 head_hash=heads, rows_verified=verified, mismatch=mismatch,
             )
 
@@ -658,68 +606,3 @@ class CalibrationStore:
                 "is_correction": r["is_correction"], "reason": r["reason"],
             }
         return {"forecast_id": r["forecast_id"], "reason": r["reason"], "at": r["at"]}
-
-    def _check_manifest(
-        self, heads: dict[str, str], counts: dict[str, int]
-    ) -> tuple[bool, ChainMismatch | None]:
-        # In-memory stores have no manifest by design (nothing to attest).
-        if not self.manifest_path:
-            return True, None
-        # Any table whose DB chain is non-empty MUST be attested by the manifest; a missing manifest
-        # file — or a missing per-table entry — is treated fail-closed as tampering, NOT a vacuous pass
-        # (M1a). This is what catches whole-chain / whole-table deletion of both the rows and the file.
-        non_genesis = {t for t in _TABLES if heads.get(t, GENESIS) != GENESIS}
-        if not os.path.exists(self.manifest_path):
-            if non_genesis:
-                table = sorted(non_genesis)[0]
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest-missing>",
-                    expected_hash=heads.get(table, GENESIS), got_hash=GENESIS,
-                )
-            return True, None
-        # Walk the manifest, verifying its own hash-chain so a mid-file line cannot be edited/dropped
-        # undetected, and collect the last attested head per table.
-        last: dict[str, str] = {}
-        last_count: dict[str, int] = {}
-        prev = GENESIS
-        with open(self.manifest_path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                e = json.loads(line)
-                mpayload = {"table": e["table"], "head": e["head"], "at": e["at"]}
-                if "count" in e:  # M2: count is part of the attested (hashed) payload when present
-                    mpayload["count"] = e["count"]
-                expected = _row_hash(prev, mpayload)
-                if e.get("prev_manifest_hash") != prev or e.get("manifest_hash") != expected:
-                    return False, ChainMismatch(
-                        table=e.get("table", "?"), row_id="<manifest-chain>",
-                        expected_hash=expected, got_hash=str(e.get("manifest_hash", "")),
-                    )
-                prev = expected
-                last[e["table"]] = e["head"]
-                if "count" in e:
-                    last_count[e["table"]] = e["count"]
-        for table in non_genesis:
-            if table not in last:
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest-missing-table>",
-                    expected_hash=heads.get(table, GENESIS), got_hash=GENESIS,
-                )
-        for table, mhead in last.items():
-            dbhead = heads.get(table, GENESIS)
-            if dbhead != mhead:
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest>", expected_hash=mhead, got_hash=dbhead
-                )
-        # M2: the last attested per-table row count must match the live table — catches trailing-row
-        # truncation that leaves a self-consistent but shorter chain (defense-in-depth alongside the head
-        # check; the residual both-truncated attack needs an off-host WORM anchor — see _append_manifest).
-        for table, mcount in last_count.items():
-            if mcount != counts.get(table, 0):
-                return False, ChainMismatch(
-                    table=table, row_id="<manifest-count>",
-                    expected_hash=f"{mcount} rows (manifest)", got_hash=f"{counts.get(table, 0)} rows (table)",
-                )
-        return True, None

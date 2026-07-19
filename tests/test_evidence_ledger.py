@@ -127,7 +127,7 @@ def test_manifest_detects_tail_truncation(ev, tmp_path):  # MF3
 def test_manifest_missing_fails_closed(ev, tmp_path):  # MF3
     ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed")
     os.remove(str(tmp_path / "ev.db.manifest.jsonl"))
-    ev._manifest_head = ev._read_manifest_head()  # simulate a fresh open after the manifest was deleted
+    # verify_chain re-checks os.path.exists live via the shared Manifest, so a deleted manifest fails closed.
     st = ev.verify_chain()
     assert st.ok is False and st.mismatch.row_id == "<manifest-missing>"
 
