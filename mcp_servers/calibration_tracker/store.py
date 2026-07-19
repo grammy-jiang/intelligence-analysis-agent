@@ -19,7 +19,7 @@ import sqlite3
 import threading
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 from ..common import Manifest
 from .models import (
@@ -49,7 +49,7 @@ def _row_hash(prev_hash: str, payload: dict) -> str:
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 # Free-text field caps (S5): bound every string that lands in the hash-chained ledger so a single
@@ -70,10 +70,12 @@ _MIN_RESOLUTION_LATENCY_S = 86400  # 24h
 
 def _parse_iso(value: str) -> datetime:
     """Parse an ISO-8601 date or datetime; naive values are treated as UTC. Raises ValueError on junk."""
-    dt = datetime.fromisoformat(value) if "T" in value or ":" in value else datetime.combine(
-        date.fromisoformat(value), datetime.min.time()
+    dt = (
+        datetime.fromisoformat(value)
+        if "T" in value or ":" in value
+        else datetime.combine(date.fromisoformat(value), datetime.min.time())
     )
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=timezone.utc)
+    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
 
 
 class CalibrationStore:
@@ -99,7 +101,9 @@ class CalibrationStore:
         # N8: WAL silently falls back to the prior mode on some filesystems; fail loud rather than run
         # under concurrency assumptions the journal mode does not actually provide.
         if db_path != ":memory:" and str(mode).lower() != "wal":
-            raise ForecastError(f"could not enable WAL journal mode (got {mode!r}); refusing to run.")
+            raise ForecastError(
+                f"could not enable WAL journal mode (got {mode!r}); refusing to run."
+            )
         self._conn.row_factory = sqlite3.Row
         self._init_schema()
         # M2: the shared external tamper-evidence anchor (per-table head + monotonic append count).
@@ -150,7 +154,9 @@ class CalibrationStore:
 
     # ---- hash chain helpers ------------------------------------------------
     def _head(self, table: str) -> str:
-        if table not in _TABLES:  # N4: guard survives `python -O` (assert is stripped), not attacker-controlled
+        if (
+            table not in _TABLES
+        ):  # N4: guard survives `python -O` (assert is stripped), not attacker-controlled
             raise ValueError(f"unknown table: {table!r}")
         row = self._conn.execute(
             f"SELECT row_hash FROM {table} ORDER BY seq DESC LIMIT 1"  # noqa: S608 - table is an internal literal
@@ -212,7 +218,15 @@ class CalibrationStore:
                 "WHERE case_id=? AND question=? AND analyst_id=? AND ROUND(probability,4)=ROUND(?,4) "
                 "AND resolution_criteria=? AND horizon=? AND rationale=? "
                 "ORDER BY seq DESC LIMIT 1",
-                (case_id, question, self.analyst_id, probability, resolution_criteria, horizon, rationale),
+                (
+                    case_id,
+                    question,
+                    self.analyst_id,
+                    probability,
+                    resolution_criteria,
+                    horizon,
+                    rationale,
+                ),
             ).fetchone()
             if existing and (now - existing["created_ts"]) <= IDEMPOTENCY_WINDOW_S:
                 # S5: echo the full locked record even on the idempotent short-circuit.
@@ -245,8 +259,19 @@ class CalibrationStore:
                     "horizon, analyst_id, judgment_source, rationale, locked_at, created_ts, prev_hash, row_hash) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        forecast_id, case_id, question, probability, resolution_criteria, horizon,
-                        self.analyst_id, judgment_source, rationale, locked_at, now, prev, rh,
+                        forecast_id,
+                        case_id,
+                        question,
+                        probability,
+                        resolution_criteria,
+                        horizon,
+                        self.analyst_id,
+                        judgment_source,
+                        rationale,
+                        locked_at,
+                        now,
+                        prev,
+                        rh,
                     ),
                 )
                 self._conn.commit()
@@ -268,7 +293,8 @@ class CalibrationStore:
 
     def _latest_resolution(self, forecast_id: str) -> sqlite3.Row | None:
         return self._conn.execute(
-            "SELECT * FROM resolutions WHERE forecast_id=? ORDER BY seq DESC LIMIT 1", (forecast_id,)
+            "SELECT * FROM resolutions WHERE forecast_id=? ORDER BY seq DESC LIMIT 1",
+            (forecast_id,),
         ).fetchone()
 
     def _is_voided(self, forecast_id: str) -> bool:
@@ -280,7 +306,12 @@ class CalibrationStore:
         )
 
     def resolve_forecast(
-        self, forecast_id: str, outcome: bool, resolved_at: str, is_correction: bool = False, reason: str = ""
+        self,
+        forecast_id: str,
+        outcome: bool,
+        resolved_at: str,
+        is_correction: bool = False,
+        reason: str = "",
     ) -> ForecastRecord:
         if len(reason) > MAX_TEXT:
             raise ForecastError(f"reason exceeds max length {MAX_TEXT}.")
@@ -288,7 +319,9 @@ class CalibrationStore:
         try:
             resolved_dt = _parse_iso(resolved_at)
         except ValueError as e:
-            raise ForecastError(f"resolved_at must be ISO-8601 (e.g. 2026-01-31 or 2026-01-31T12:00:00Z): {e}")
+            raise ForecastError(
+                f"resolved_at must be ISO-8601 (e.g. 2026-01-31 or 2026-01-31T12:00:00Z): {e}"
+            )
 
         # M1 (TOCTOU): the single-resolution decision (does a prior resolution already exist?) and the
         # head-read + INSERT MUST be one atomic critical section. Reading `_latest_resolution` OUTSIDE the lock
@@ -308,7 +341,9 @@ class CalibrationStore:
             if is_correction and not reason.strip():
                 raise ForecastError("a correction requires a non-empty reason.")
             if is_correction and existing is None:
-                raise ForecastError("is_correction=True but there is no prior resolution to correct.")
+                raise ForecastError(
+                    "is_correction=True but there is no prior resolution to correct."
+                )
             # N5: locked_at is written by the store itself, so a parse failure means the row is corrupt —
             # fail loud rather than silently disabling the anti-backdating check.
             try:
@@ -336,7 +371,15 @@ class CalibrationStore:
                 self._conn.execute(
                     "INSERT INTO resolutions(forecast_id, outcome, resolved_at, is_correction, reason, prev_hash, "
                     "row_hash) VALUES(?,?,?,?,?,?,?)",
-                    (forecast_id, int(bool(outcome)), resolved_at, int(is_correction), reason, prev, rh),
+                    (
+                        forecast_id,
+                        int(bool(outcome)),
+                        resolved_at,
+                        int(is_correction),
+                        reason,
+                        prev,
+                        rh,
+                    ),
                 )
                 self._conn.commit()
             except Exception:
@@ -379,7 +422,8 @@ class CalibrationStore:
 
     def _correction_count(self, forecast_id: str) -> int:
         return self._conn.execute(
-            "SELECT COUNT(*) c FROM resolutions WHERE forecast_id=? AND is_correction=1", (forecast_id,)
+            "SELECT COUNT(*) c FROM resolutions WHERE forecast_id=? AND is_correction=1",
+            (forecast_id,),
         ).fetchone()["c"]
 
     def get_forecast(self, forecast_id: str) -> ForecastRecord:
@@ -406,7 +450,11 @@ class CalibrationStore:
         )
 
     def list_forecasts(
-        self, case_id: str | None = None, resolved: bool | None = None, limit: int = 100, cursor: str | None = None
+        self,
+        case_id: str | None = None,
+        resolved: bool | None = None,
+        limit: int = 100,
+        cursor: str | None = None,
     ) -> ForecastList:
         limit = max(1, min(limit, 1000))
         try:
@@ -449,7 +497,7 @@ class CalibrationStore:
         """
         # S3: scope the report to this analyst's own forecasts on a shared DB file.
         q = (
-            "SELECT f.forecast_id, f.probability, f.horizon, f.locked_at FROM forecasts f "
+            "SELECT f.forecast_id, f.probability, f.horizon, f.locked_at FROM forecasts f "  # noqa: S608 - literal fragments only; all values bound with ?
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id = ? "
             "AND f.forecast_id NOT IN (SELECT forecast_id FROM voids) "
             + ("AND f.case_id = ? " if case_id else "")
@@ -484,15 +532,19 @@ class CalibrationStore:
                         resolved_before_horizon += 1
                     n_horizon_checked += 1
                 except ValueError:
-                    n_horizon_skipped += 1  # non-date horizon (free-form OR ISO-8601 duration) — no signal
+                    n_horizon_skipped += (
+                        1  # non-date horizon (free-form OR ISO-8601 duration) — no signal
+                    )
                 try:
-                    gap = (_parse_iso(res["resolved_at"]) - _parse_iso(r["locked_at"])).total_seconds()
+                    gap = (
+                        _parse_iso(res["resolved_at"]) - _parse_iso(r["locked_at"])
+                    ).total_seconds()
                     if gap < _MIN_RESOLUTION_LATENCY_S:
                         resolved_within_min_latency += 1
                 except ValueError:
                     pass  # locked_at is server-authored ISO; guard defensively, never fatal
         n_voided = self._conn.execute(
-            "SELECT COUNT(*) c FROM voids v JOIN forecasts f ON f.forecast_id=v.forecast_id "
+            "SELECT COUNT(*) c FROM voids v JOIN forecasts f ON f.forecast_id=v.forecast_id "  # noqa: S608 - literal fragments only; all values bound with ?
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id=? "
             + ("AND f.case_id=?" if case_id else ""),
             ((self.analyst_id, case_id) if case_id else (self.analyst_id,)),
@@ -501,11 +553,18 @@ class CalibrationStore:
         n = len(pairs)
         if n == 0:
             return CalibrationReport(
-                n=0, n_voided=n_voided, n_corrected=0, resolved_before_horizon=resolved_before_horizon,
-                n_horizon_checked=n_horizon_checked, n_horizon_skipped=n_horizon_skipped,
+                n=0,
+                n_voided=n_voided,
+                n_corrected=0,
+                resolved_before_horizon=resolved_before_horizon,
+                n_horizon_checked=n_horizon_checked,
+                n_horizon_skipped=n_horizon_skipped,
                 resolved_within_min_latency=resolved_within_min_latency,
-                brier=None, buckets=[], resolution_component=None,
-                reliability_component=None, note="no resolved analyst_confirmed forecasts yet",
+                brier=None,
+                buckets=[],
+                resolution_component=None,
+                reliability_component=None,
+                note="no resolved analyst_confirmed forecasts yet",
             )
         brier = sum((p - o) ** 2 for p, o in pairs) / n
         obar = sum(o for _, o in pairs) / n
@@ -521,7 +580,9 @@ class CalibrationStore:
                 ok = sum(o for _, o in grp) / nk
                 reliability += nk * (pk - ok) ** 2
                 resolution += nk * (ok - obar) ** 2
-                buckets.append(Bucket(p_range=f"{lo:.1f}-{hi:.1f}", n=nk, observed_freq=round(ok, 4)))
+                buckets.append(
+                    Bucket(p_range=f"{lo:.1f}-{hi:.1f}", n=nk, observed_freq=round(ok, 4))
+                )
             else:
                 buckets.append(Bucket(p_range=f"{lo:.1f}-{hi:.1f}", n=0, observed_freq=None))
         reliability /= n
@@ -565,10 +626,16 @@ class CalibrationStore:
                     expected = _row_hash(prev, payload)
                     if expected != r["row_hash"] or r["prev_hash"] != prev:
                         return ChainStatus(
-                            server="calibration-tracker", scope="all", ok=False,
-                            head_hash=heads, rows_verified=verified,
+                            server="calibration-tracker",
+                            scope="all",
+                            ok=False,
+                            head_hash=heads,
+                            rows_verified=verified,
                             mismatch=ChainMismatch(
-                                table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
+                                table=table,
+                                row_id=str(r["seq"]),
+                                expected_hash=expected,
+                                got_hash=r["row_hash"],
                             ),
                         )
                     prev = r["row_hash"]
@@ -581,28 +648,46 @@ class CalibrationStore:
             ok, mm = self._manifest.check(heads, counts)
             mismatch = (
                 ChainMismatch(
-                    table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                    table=mm.table,
+                    row_id=mm.row_id,
+                    expected_hash=mm.expected_hash,
+                    got_hash=mm.got_hash,
                 )
                 if mm is not None
                 else None
             )
             return ChainStatus(
-                server="calibration-tracker", scope="all", ok=ok,
-                head_hash=heads, rows_verified=verified, mismatch=mismatch,
+                server="calibration-tracker",
+                scope="all",
+                ok=ok,
+                head_hash=heads,
+                rows_verified=verified,
+                mismatch=mismatch,
             )
 
     def _payload_for(self, table: str, r: sqlite3.Row) -> dict:
         if table == "forecasts":
             return {
-                "forecast_id": r["forecast_id"], "case_id": r["case_id"], "question": r["question"],
-                "probability": r["probability"], "resolution_criteria": r["resolution_criteria"],
-                "horizon": r["horizon"], "analyst_id": r["analyst_id"],
-                "judgment_source": r["judgment_source"], "rationale": r["rationale"], "locked_at": r["locked_at"],
-                "created_ts": r["created_ts"],  # S2: hash covers created_ts (see log_forecast payload).
+                "forecast_id": r["forecast_id"],
+                "case_id": r["case_id"],
+                "question": r["question"],
+                "probability": r["probability"],
+                "resolution_criteria": r["resolution_criteria"],
+                "horizon": r["horizon"],
+                "analyst_id": r["analyst_id"],
+                "judgment_source": r["judgment_source"],
+                "rationale": r["rationale"],
+                "locked_at": r["locked_at"],
+                "created_ts": r[
+                    "created_ts"
+                ],  # S2: hash covers created_ts (see log_forecast payload).
             }
         if table == "resolutions":
             return {
-                "forecast_id": r["forecast_id"], "outcome": r["outcome"], "resolved_at": r["resolved_at"],
-                "is_correction": r["is_correction"], "reason": r["reason"],
+                "forecast_id": r["forecast_id"],
+                "outcome": r["outcome"],
+                "resolved_at": r["resolved_at"],
+                "is_correction": r["is_correction"],
+                "reason": r["reason"],
             }
         return {"forecast_id": r["forecast_id"], "reason": r["reason"], "at": r["at"]}

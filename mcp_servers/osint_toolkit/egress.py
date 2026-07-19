@@ -114,9 +114,11 @@ def validate_url(
     for ip_str in ips:
         ip = ipaddress.ip_address(ip_str)
         if _ip_blocked(ip):
-            raise EgressError(f"host {host} resolves to blocked IP {ip} (rebinding / internal target)")
+            raise EgressError(
+                f"host {host} resolves to blocked IP {ip} (rebinding / internal target)"
+            )
         pinned = pinned or ip_str
-    assert pinned is not None
+    assert pinned is not None  # noqa: S101 - invariant: ips is non-empty by caller contract (post-resolution)
     return host, pinned
 
 
@@ -131,7 +133,9 @@ def _pinned_https_get(host: str, ip: str, url: str) -> tuple[int, dict, bytes]:
     path = parts.path or "/"
     if parts.query:
         path += "?" + parts.query
-    port = parts.port or 443  # MF3: honor the validated port (validate_url has already restricted it to 443)
+    port = (
+        parts.port or 443
+    )  # MF3: honor the validated port (validate_url has already restricted it to 443)
     ctx = ssl.create_default_context()
     raw_sock = socket.create_connection((ip, port), timeout=15)
     # M4: wrap_socket runs BEFORE the try/finally below. A handshake failure (bad cert / timeout — routine for
@@ -145,7 +149,11 @@ def _pinned_https_get(host: str, ip: str, url: str) -> tuple[int, dict, bytes]:
     try:
         conn = http.client.HTTPSConnection(host, timeout=15)
         conn.sock = tls  # reuse the pre-connected, pinned, cert-validated socket (no re-resolve)
-        conn.request("GET", path, headers={"Host": host, "Connection": "close", "User-Agent": "osint-toolkit"})
+        conn.request(
+            "GET",
+            path,
+            headers={"Host": host, "Connection": "close", "User-Agent": "osint-toolkit"},
+        )
         resp = conn.getresponse()
         body = resp.read(MAX_FETCH_BYTES + 1)
         return resp.status, {k.lower(): v for k, v in resp.getheaders()}, body
@@ -153,7 +161,9 @@ def _pinned_https_get(host: str, ip: str, url: str) -> tuple[int, dict, bytes]:
         tls.close()
 
 
-def fetch_pinned(url, *, max_bytes=MAX_FETCH_BYTES, max_redirects=5, opener=None, resolver=_default_resolver):
+def fetch_pinned(
+    url, *, max_bytes=MAX_FETCH_BYTES, max_redirects=5, opener=None, resolver=_default_resolver
+):
     """Fetch through the guard, re-validating scheme + IP on EVERY redirect hop (control #3). Returns
     (final_url, body, content_type). `opener(host, ip, url)` is injectable for tests; default = pinned-TLS GET."""
     opener = opener or _pinned_https_get

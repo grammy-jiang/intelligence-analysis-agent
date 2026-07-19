@@ -30,8 +30,14 @@ def _log(s, q="Q", p=0.5, case="c1"):
 # --- the real Brier gate ---------------------------------------------------
 # The 8 resolved items from docs/validation/compute_brier.py (assisted forecasts).
 BRIER_ITEMS = [
-    ("Y2K", 0.12, 0), ("Olympics", 0.06, 0), ("Grexit", 0.25, 0), ("Recession", 0.40, 0),
-    ("SpaceX", 0.45, 1), ("Higgs", 0.82, 1), ("Favorite", 0.75, 1), ("Ceasefire", 0.30, 0),
+    ("Y2K", 0.12, 0),
+    ("Olympics", 0.06, 0),
+    ("Grexit", 0.25, 0),
+    ("Recession", 0.40, 0),
+    ("SpaceX", 0.45, 1),
+    ("Higgs", 0.82, 1),
+    ("Favorite", 0.75, 1),
+    ("Ceasefire", 0.30, 0),
 ]
 
 
@@ -89,7 +95,9 @@ def test_resolve_then_correct(store):
     with pytest.raises(ForecastError, match="reason"):
         store.resolve_forecast(ref.forecast_id, False, ref.locked_at, is_correction=True)
     # valid correction supersedes (latest wins), original row still present in the chain
-    rec = store.resolve_forecast(ref.forecast_id, False, ref.locked_at, is_correction=True, reason="miscoded")
+    rec = store.resolve_forecast(
+        ref.forecast_id, False, ref.locked_at, is_correction=True, reason="miscoded"
+    )
     assert store.get_forecast(ref.forecast_id).outcome is False
     # correction is now visible on the record without a full chain audit (S12)
     assert rec.was_corrected is True and rec.correction_count == 1
@@ -256,14 +264,18 @@ def test_oversized_field_rejected(store):
 def test_idempotency_does_not_drop_differing_content(store):
     a = store.log_forecast("c", "q", 0.5, "criteria A", "3mo", "analyst_confirmed")
     b = store.log_forecast("c", "q", 0.5, "criteria B", "3mo", "analyst_confirmed")
-    assert a.forecast_id != b.forecast_id  # differing criteria => a new forecast, not a silent dedup
+    assert (
+        a.forecast_id != b.forecast_id
+    )  # differing criteria => a new forecast, not a silent dedup
     c = store.log_forecast("c", "q", 0.5, "criteria A", "3mo", "analyst_confirmed")
     assert c.forecast_id == a.forecast_id  # a truly identical retry within the window IS deduped
 
 
 # --- S5: log_forecast echoes the full locked record so the caller can confirm the immutable write ---
 def test_log_forecast_returns_full_record(store):
-    rec = store.log_forecast("c", "will it rain?", 0.7, "criteria", "3mo", "analyst_confirmed", "because")
+    rec = store.log_forecast(
+        "c", "will it rain?", 0.7, "criteria", "3mo", "analyst_confirmed", "because"
+    )
     assert rec.probability == 0.7
     assert rec.question == "will it rain?"
     assert rec.resolution_criteria == "criteria"
@@ -278,7 +290,10 @@ def test_created_ts_tamper_detected(store, tmp_path):
     ref = _log(store)
     assert store.verify_chain().ok
     raw = sqlite3.connect(str(tmp_path / "cal.db"))
-    raw.execute("UPDATE forecasts SET created_ts = created_ts + 1000 WHERE forecast_id=?", (ref.forecast_id,))
+    raw.execute(
+        "UPDATE forecasts SET created_ts = created_ts + 1000 WHERE forecast_id=?",
+        (ref.forecast_id,),
+    )
     raw.commit()
     raw.close()
     status = store.verify_chain()
@@ -322,7 +337,9 @@ def test_resolution_check_runs_inside_write_lock(store, tracked_lock):
     # two concurrent resolve_forecast(is_correction=False) calls could both observe "unresolved" and both
     # append a first resolution, defeating the no-double-resolve invariant. Prove the decision read now
     # happens while the write lock is held (mirrors evidence-ledger's grade-existence TOCTOU test).
-    store._write_lock = tracked_lock(store._write_lock)  # TrackedLock helper lives in conftest.py (DRY)
+    store._write_lock = tracked_lock(
+        store._write_lock
+    )  # TrackedLock helper lives in conftest.py (DRY)
     depths: list[int] = []
     orig = store._latest_resolution
 
@@ -419,8 +436,14 @@ def test_manifest_count_migration_from_precount(tmp_path):
     mp.write_text("\n".join(out) + "\n")
     b = CalibrationStore(db, analyst_id="m")
     try:
-        assert b.verify_chain().ok is True  # the pre-count manifest verifies (no false tamper on read)
-        _log(b, q="q3")  # migration seeded the count from the live table -> this attests count=3, not 1
-        assert b.verify_chain().ok is True  # WITHOUT the fallback: a FALSE tamper (manifest 1 vs table 3 rows)
+        assert (
+            b.verify_chain().ok is True
+        )  # the pre-count manifest verifies (no false tamper on read)
+        _log(
+            b, q="q3"
+        )  # migration seeded the count from the live table -> this attests count=3, not 1
+        assert (
+            b.verify_chain().ok is True
+        )  # WITHOUT the fallback: a FALSE tamper (manifest 1 vs table 3 rows)
     finally:
         b.close()

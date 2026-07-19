@@ -35,7 +35,9 @@ mcp = FastMCP("calibration-tracker", mask_error_details=True)
 
 @mcp.tool
 def log_forecast(
-    case_id: Annotated[str, Field(max_length=512, description="Analytic case this forecast belongs to.")],
+    case_id: Annotated[
+        str, Field(max_length=512, description="Analytic case this forecast belongs to.")
+    ],
     question: Annotated[
         str,
         Field(
@@ -48,7 +50,8 @@ def log_forecast(
         Field(ge=0.0, le=1.0, description="P(question resolves YES, i.e. outcome=True), in [0,1]."),
     ],
     resolution_criteria: Annotated[
-        str, Field(max_length=4000, description="Clairvoyance-style definition of what counts as YES.")
+        str,
+        Field(max_length=4000, description="Clairvoyance-style definition of what counts as YES."),
     ],
     horizon: Annotated[
         str,
@@ -64,7 +67,9 @@ def log_forecast(
             "this tool does not independently verify it (see judgment_source in the return value)."
         ),
     ] = "analyst_confirmed",
-    rationale: Annotated[str, Field(max_length=4000, description="Optional reasoning for the judgment.")] = "",
+    rationale: Annotated[
+        str, Field(max_length=4000, description="Optional reasoning for the judgment.")
+    ] = "",
 ) -> ForecastRecord:
     """Log a NEW forecast and LOCK its question + probability (only outcomes/voids are appended later).
     `probability` is the analyst's judgment = P(question resolves YES). `judgment_source` is a caller
@@ -91,13 +96,20 @@ def resolve_forecast(
     ],
     outcome: Annotated[bool, Field(description="True = the question resolved YES.")],
     resolved_at: Annotated[
-        str, Field(description="ISO-8601 date/datetime the outcome was known; must be >= the forecast's locked_at.")
+        str,
+        Field(
+            description="ISO-8601 date/datetime the outcome was known; must be >= the forecast's locked_at."
+        ),
     ],
     is_correction: Annotated[
         bool,
-        Field(description="False = first resolution. True = append a SUPERSEDING correction (needs a reason)."),
+        Field(
+            description="False = first resolution. True = append a SUPERSEDING correction (needs a reason)."
+        ),
     ] = False,
-    reason: Annotated[str, Field(max_length=4000, description="Required (non-empty) when is_correction=True.")] = "",
+    reason: Annotated[
+        str, Field(max_length=4000, description="Required (non-empty) when is_correction=True.")
+    ] = "",
 ) -> ForecastRecord:
     """Append the OUTCOME to a locked forecast. First resolution: is_correction=False. To fix a wrong
     outcome: is_correction=True + non-empty reason (appends a superseding resolution; never edits).
@@ -125,7 +137,11 @@ def void_forecast(
         str, Field(max_length=200, description="The forecast_id returned by log_forecast.")
     ],
     reason: Annotated[
-        str, Field(max_length=4000, description="Why it is mis-logged; non-empty and recorded in the ledger.")
+        str,
+        Field(
+            max_length=4000,
+            description="Why it is mis-logged; non-empty and recorded in the ledger.",
+        ),
     ],
 ) -> ForecastRecord:
     """Flag a MIS-LOGGED forecast as excluded from Brier scoring. PRE-RESOLUTION ONLY (errors if resolved)."""
@@ -151,7 +167,10 @@ def get_forecast(
 @mcp.tool
 def list_forecasts(
     case_id: Annotated[
-        str | None, Field(default=None, max_length=512, description="Filter to one analytic case; omit for all.")
+        str | None,
+        Field(
+            default=None, max_length=512, description="Filter to one analytic case; omit for all."
+        ),
     ] = None,
     resolved: Annotated[
         bool | None,
@@ -159,7 +178,10 @@ def list_forecasts(
     ] = None,
     limit: Annotated[int, Field(ge=1, le=1000, description="Max items per page (1..1000).")] = 100,
     cursor: Annotated[
-        str | None, Field(description="Opaque pagination token from a prior next_cursor; omit for the first page.")
+        str | None,
+        Field(
+            description="Opaque pagination token from a prior next_cursor; omit for the first page."
+        ),
     ] = None,
 ) -> ForecastList:
     """Read-back with filters + pagination. Pass the returned `next_cursor` back as `cursor` for the next page."""
@@ -172,7 +194,10 @@ def list_forecasts(
 @mcp.tool
 def get_calibration_report(
     case_id: Annotated[
-        str | None, Field(default=None, max_length=512, description="Scope the report to one case; omit for all.")
+        str | None,
+        Field(
+            default=None, max_length=512, description="Scope the report to one case; omit for all."
+        ),
     ] = None,
 ) -> CalibrationReport:
     """COMPUTE Brier + a calibration table + Murphy resolution/reliability over analyst_confirmed, non-voided,
@@ -202,9 +227,15 @@ def verify_chain() -> ChainStatus:
 def main() -> None:
     status = store.verify_chain()
     if not status.ok:
-        print(f"[calibration-tracker] REFUSING TO SERVE — chain verify failed: {status.mismatch}", file=sys.stderr)
+        print(
+            f"[calibration-tracker] REFUSING TO SERVE — chain verify failed: {status.mismatch}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
-    print(f"[calibration-tracker] chain OK ({status.rows_verified} rows); serving on stdio", file=sys.stderr)
+    print(
+        f"[calibration-tracker] chain OK ({status.rows_verified} rows); serving on stdio",
+        file=sys.stderr,
+    )
     # show_banner=False (N2): the default banner does a "newer version" HTTP check — suppressed to
     # honour this repo's no-egress discipline (only the osint server is permitted network egress).
     mcp.run(transport="stdio", show_banner=False)

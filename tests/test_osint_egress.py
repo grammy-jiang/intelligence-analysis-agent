@@ -16,7 +16,9 @@ def _resolver(mapping):
 
 
 # --- scheme + userinfo -----------------------------------------------------
-@pytest.mark.parametrize("url", ["http://example.com", "file:///etc/passwd", "gopher://x", "ftp://x"])
+@pytest.mark.parametrize(
+    "url", ["http://example.com", "file:///etc/passwd", "gopher://x", "ftp://x"]
+)
 def test_scheme_rejected(url):
     with pytest.raises(EgressError, match="scheme"):
         validate_url(url, allowed_hosts={"example.com"})
@@ -67,14 +69,20 @@ def test_noncanonical_literals_rejected(url):
 # --- allowlist + DNS rebinding ---------------------------------------------
 def test_host_not_in_allowlist():
     with pytest.raises(EgressError, match="allowlist"):
-        validate_url("https://evil.com", allowed_hosts={"good.com"}, resolver=_resolver({"evil.com": ["1.2.3.4"]}))
+        validate_url(
+            "https://evil.com",
+            allowed_hosts={"good.com"},
+            resolver=_resolver({"evil.com": ["1.2.3.4"]}),
+        )
 
 
 def test_dns_rebinding_to_internal_blocked():
     # a permitted host that resolves to a loopback/internal IP (rebinding) must be refused
     with pytest.raises(EgressError, match="blocked IP"):
         validate_url(
-            "https://good.com", allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["127.0.0.1"]})
+            "https://good.com",
+            allowed_hosts={"good.com"},
+            resolver=_resolver({"good.com": ["127.0.0.1"]}),
         )
 
 
@@ -86,7 +94,9 @@ def test_no_resolution():
 # --- the happy path pins the validated public IP ---------------------------
 def test_valid_public_host_pins_ip():
     host, ip = validate_url(
-        "https://good.com/path?q=1", allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["93.184.216.34"]})
+        "https://good.com/path?q=1",
+        allowed_hosts={"good.com"},
+        resolver=_resolver({"good.com": ["93.184.216.34"]}),
     )
     assert host == "good.com" and ip == "93.184.216.34"
 
@@ -100,12 +110,16 @@ def test_valid_public_ip_literal():
 @pytest.mark.parametrize("url", ["https://good.com:8443/x", "https://93.184.216.34:8080"])
 def test_nonstandard_port_rejected(url):
     with pytest.raises(EgressError, match="port not allowed"):
-        validate_url(url, allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["93.184.216.34"]}))
+        validate_url(
+            url, allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["93.184.216.34"]})
+        )
 
 
 def test_explicit_443_allowed():
     host, ip = validate_url(
-        "https://good.com:443/x", allowed_hosts={"good.com"}, resolver=_resolver({"good.com": ["93.184.216.34"]})
+        "https://good.com:443/x",
+        allowed_hosts={"good.com"},
+        resolver=_resolver({"good.com": ["93.184.216.34"]}),
     )
     assert host == "good.com" and ip == "93.184.216.34"
 

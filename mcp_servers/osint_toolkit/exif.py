@@ -8,7 +8,9 @@ import io
 from PIL import Image
 from PIL.ExifTags import GPSTAGS, TAGS
 
-Image.MAX_IMAGE_PIXELS = 64_000_000  # decompression-bomb guard (Pillow raises DecompressionBombError above this)
+Image.MAX_IMAGE_PIXELS = (
+    64_000_000  # decompression-bomb guard (Pillow raises DecompressionBombError above this)
+)
 
 
 def dms_to_decimal(dms, ref: str) -> float:
@@ -38,11 +40,23 @@ def parse_exif(data: bytes) -> dict[str, str]:
                     out[name] = str(val)[:120]
             if gps.get("GPSLatitude") and gps.get("GPSLongitude"):
                 try:
-                    out["gps_lat"] = str(round(dms_to_decimal(gps["GPSLatitude"], str(gps.get("GPSLatitudeRef", "N"))), 6))
-                    out["gps_lon"] = str(round(dms_to_decimal(gps["GPSLongitude"], str(gps.get("GPSLongitudeRef", "E"))), 6))
-                except Exception:
+                    out["gps_lat"] = str(
+                        round(
+                            dms_to_decimal(gps["GPSLatitude"], str(gps.get("GPSLatitudeRef", "N"))),
+                            6,
+                        )
+                    )
+                    out["gps_lon"] = str(
+                        round(
+                            dms_to_decimal(
+                                gps["GPSLongitude"], str(gps.get("GPSLongitudeRef", "E"))
+                            ),
+                            6,
+                        )
+                    )
+                except Exception:  # noqa: S110, BLE001 - bad GPS field on adversarial EXIF: skip, never crash
                     pass
-    except Exception:
+    except Exception:  # noqa: S110, BLE001 - adversarial bytes must never crash the parser
         # any parser error (corrupt, bomb, unsupported) → empty candidate set, never a crash on adversarial bytes
         pass
     return out

@@ -50,7 +50,9 @@ def test_iraqi_golden_h2_leads_by_least_inconsistency(ach):
     h1 = next(x for x in r.ordered if x.hypothesis_id == hid["H1"])
     assert h1.strong_inconsistencies == 4
     # ordered ascending by strong inconsistencies
-    assert [x.strong_inconsistencies for x in r.ordered] == sorted(x.strong_inconsistencies for x in r.ordered)
+    assert [x.strong_inconsistencies for x in r.ordered] == sorted(
+        x.strong_inconsistencies for x in r.ordered
+    )
 
 
 def test_supersede_requires_reason(ach):
@@ -136,9 +138,13 @@ def test_rate_confirmed_requires_out_of_band_grade(ach):
     hid = ref.hypotheses[0].hypothesis_id
     with pytest.raises(ACHError, match="out-of-band confirmation required"):
         ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "analyst_confirmed")
-    ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "model_draft")  # drafting is always allowed
+    ach.rate_cell(
+        ref.matrix_id, "E1", hid, "C", "strong", "model_draft"
+    )  # drafting is always allowed
     ach.staleness.mark_graded("E1", "analyst_confirmed")  # human confirms out of band
-    rec = ach.rate_cell(ref.matrix_id, "E1", hid, "C", "strong", "analyst_confirmed", reason="confirm")
+    rec = ach.rate_cell(
+        ref.matrix_id, "E1", hid, "C", "strong", "analyst_confirmed", reason="confirm"
+    )
     assert rec.judgment_source == "analyst_confirmed"
 
 
@@ -148,7 +154,9 @@ def test_superseded_flag_reflects_correction(ach):
     hid = ref.hypotheses[0].hypothesis_id
     first = _rate(ach, ref.matrix_id, "E1", hid, "C")
     assert first.superseded is False
-    second = ach.rate_cell(ref.matrix_id, "E1", hid, "I", "strong", "analyst_confirmed", reason="re-read")
+    second = ach.rate_cell(
+        ref.matrix_id, "E1", hid, "I", "strong", "analyst_confirmed", reason="re-read"
+    )
     assert second.superseded is True
 
 
@@ -287,7 +295,9 @@ def test_verify_chain_holds_write_lock(ach, tracked_lock):
 
     ach._payload_for = probe
     assert ach.verify_chain().ok is True
-    assert depths and all(d > 0 for d in depths)  # every payload build happened under the write lock
+    assert depths and all(
+        d > 0 for d in depths
+    )  # every payload build happened under the write lock
 
 
 def test_store_length_caps(ach):
@@ -315,8 +325,12 @@ def test_manifest_middle_line_edit_detected(ach):
     with open(mp, encoding="utf-8") as fh:
         lines = [ln for ln in fh.read().splitlines() if ln.strip()]
     assert len(lines) >= 3  # a genuine middle line exists
-    e = json.loads(lines[1])  # first hypotheses entry — NOT the last per-table head, so only the self-chain catches it
-    e["head"] = "0" * 64  # rewrite its attested head; the recomputed manifest_hash no longer matches
+    e = json.loads(
+        lines[1]
+    )  # first hypotheses entry — NOT the last per-table head, so only the self-chain catches it
+    e["head"] = (
+        "0" * 64
+    )  # rewrite its attested head; the recomputed manifest_hash no longer matches
     lines[1] = json.dumps(e)
     with open(mp, "w", encoding="utf-8") as fh:
         fh.write("\n".join(lines) + "\n")

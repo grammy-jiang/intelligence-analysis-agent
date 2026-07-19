@@ -103,11 +103,17 @@ class StalenessStore:
     # ---- staleness signal --------------------------------------------------
     def mark_stale(self, evidence_id: str, changed_field: str) -> None:
         ts = self._clock()
-        payload = {"evidence_id": evidence_id, "changed_field": changed_field, "marked_at": now_iso()}
+        payload = {
+            "evidence_id": evidence_id,
+            "changed_field": changed_field,
+            "marked_at": now_iso(),
+        }
         with self._write_lock:
             prev = self._head("stale_events")
             rh = row_hash(prev, payload)
-            with self._conn:  # atomic commit-or-rollback; manifest appended only AFTER the commit succeeds
+            with (
+                self._conn
+            ):  # atomic commit-or-rollback; manifest appended only AFTER the commit succeeds
                 self._conn.execute(
                     "INSERT INTO stale_events(evidence_id, changed_field, marked_at, marked_ts, prev_hash, row_hash) "
                     "VALUES(?,?,?,?,?,?)",
@@ -131,11 +137,17 @@ class StalenessStore:
     # ---- grade-confirmation signal ----------------------------------------
     def mark_graded(self, evidence_id: str, judgment_source: str) -> None:
         ts = self._clock()
-        payload = {"evidence_id": evidence_id, "judgment_source": judgment_source, "marked_at": now_iso()}
+        payload = {
+            "evidence_id": evidence_id,
+            "judgment_source": judgment_source,
+            "marked_at": now_iso(),
+        }
         with self._write_lock:
             prev = self._head("grade_signals")
             rh = row_hash(prev, payload)
-            with self._conn:  # atomic commit-or-rollback; manifest appended only AFTER the commit succeeds
+            with (
+                self._conn
+            ):  # atomic commit-or-rollback; manifest appended only AFTER the commit succeeds
                 self._conn.execute(
                     "INSERT INTO grade_signals(evidence_id, judgment_source, marked_at, marked_ts, prev_hash, row_hash) "
                     "VALUES(?,?,?,?,?,?)",
@@ -155,8 +167,16 @@ class StalenessStore:
     # ---- integrity ---------------------------------------------------------
     def _payload_for(self, table: str, r) -> dict:
         if table == "stale_events":
-            return {"evidence_id": r["evidence_id"], "changed_field": r["changed_field"], "marked_at": r["marked_at"]}
-        return {"evidence_id": r["evidence_id"], "judgment_source": r["judgment_source"], "marked_at": r["marked_at"]}
+            return {
+                "evidence_id": r["evidence_id"],
+                "changed_field": r["changed_field"],
+                "marked_at": r["marked_at"],
+            }
+        return {
+            "evidence_id": r["evidence_id"],
+            "judgment_source": r["judgment_source"],
+            "marked_at": r["marked_at"],
+        }
 
     def verify_chain(self) -> ChainStatus:
         """Verify BOTH signal chains AND anchor each to the external manifest. score_matrix trusts
@@ -177,9 +197,16 @@ class StalenessStore:
                     expected = row_hash(prev, self._payload_for(table, r))
                     if expected != r["row_hash"] or r["prev_hash"] != prev:
                         return ChainStatus(
-                            server="evidence-signals", scope="all", ok=False, head_hash=heads, rows_verified=verified,
+                            server="evidence-signals",
+                            scope="all",
+                            ok=False,
+                            head_hash=heads,
+                            rows_verified=verified,
                             mismatch=ChainMismatch(
-                                table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
+                                table=table,
+                                row_id=str(r["seq"]),
+                                expected_hash=expected,
+                                got_hash=r["row_hash"],
                             ),
                         )
                     prev = r["row_hash"]
@@ -191,11 +218,22 @@ class StalenessStore:
             ok, mm = self._manifest.check(heads, counts)
             if not ok and mm is not None:
                 return ChainStatus(
-                    server="evidence-signals", scope="all", ok=False, head_hash=heads, rows_verified=verified,
+                    server="evidence-signals",
+                    scope="all",
+                    ok=False,
+                    head_hash=heads,
+                    rows_verified=verified,
                     mismatch=ChainMismatch(
-                        table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                        table=mm.table,
+                        row_id=mm.row_id,
+                        expected_hash=mm.expected_hash,
+                        got_hash=mm.got_hash,
                     ),
                 )
             return ChainStatus(
-                server="evidence-signals", scope="all", ok=True, head_hash=heads, rows_verified=verified
+                server="evidence-signals",
+                scope="all",
+                ok=True,
+                head_hash=heads,
+                rows_verified=verified,
             )

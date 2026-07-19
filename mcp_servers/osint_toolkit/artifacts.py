@@ -38,7 +38,9 @@ class ArtifactStore:
         if len(data) > MAX_ARTIFACT_BYTES:
             raise ArtifactError("artifact exceeds size cap")
         token = "art_" + uuid.uuid4().hex
-        with open(os.path.join(self.root, token), "wb") as fh:  # filename == token, never remote-derived
+        with open(
+            os.path.join(self.root, token), "wb"
+        ) as fh:  # filename == token, never remote-derived
             fh.write(data)
         return token
 

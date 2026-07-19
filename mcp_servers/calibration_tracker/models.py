@@ -31,7 +31,8 @@ class ForecastRecord(BaseModel):
     rationale: str = ""
     locked_at: str
     outcome: bool | None = Field(
-        default=None, description="Effective resolved outcome (latest resolution); True=YES. None if unresolved."
+        default=None,
+        description="Effective resolved outcome (latest resolution); True=YES. None if unresolved.",
     )
     resolved_at: str | None = None
     voided: bool = False
@@ -39,7 +40,8 @@ class ForecastRecord(BaseModel):
         default=False, description="True if the outcome was superseded by at least one correction."
     )
     correction_count: int = Field(
-        default=0, description="Number of correction resolutions appended after the first resolution."
+        default=0,
+        description="Number of correction resolutions appended after the first resolution.",
     )
     row_hash: str = Field(
         description="Internal chain-integrity hash of the forecast row — NOT a judgment or score."
@@ -61,7 +63,8 @@ class CalibrationReport(BaseModel):
     n: int
     n_voided: int
     n_corrected: int = Field(
-        default=0, description="Count of scored forecasts whose outcome was later corrected (audit signal)."
+        default=0,
+        description="Count of scored forecasts whose outcome was later corrected (audit signal).",
     )
     resolved_before_horizon: int = Field(
         default=0,

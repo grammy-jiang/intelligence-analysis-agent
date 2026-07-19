@@ -15,7 +15,16 @@ from pydantic import Field
 
 from ..common import ChainStatus
 from ..staleness import StalenessStore
-from .models import CellRecord, Consistency, JudgmentSource, Matrix, MatrixList, MatrixRef, Ranking, Strength
+from .models import (
+    CellRecord,
+    Consistency,
+    JudgmentSource,
+    Matrix,
+    MatrixList,
+    MatrixRef,
+    Ranking,
+    Strength,
+)
 from .store import ACHError, ACHStore
 
 _DATA = Path(__file__).resolve().parent.parent.parent / "data"
@@ -102,7 +111,12 @@ def _translate_ach_errors(fn: Callable) -> Callable:
 @mcp.tool
 @_translate_ach_errors
 def create_matrix(
-    case_id: Annotated[str, Field(max_length=_MAX_ID, description="The ACH case / investigation this matrix belongs to.")],
+    case_id: Annotated[
+        str,
+        Field(
+            max_length=_MAX_ID, description="The ACH case / investigation this matrix belongs to."
+        ),
+    ],
     hypotheses: Annotated[
         list[Annotated[str, Field(max_length=_MAX_TEXT)]],
         Field(
@@ -125,7 +139,9 @@ def create_matrix(
 @mcp.tool
 @_translate_ach_errors
 def add_hypothesis(
-    matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix to append the hypothesis column to.")],
+    matrix_id: Annotated[
+        str, Field(max_length=_MAX_ID, description="The matrix to append the hypothesis column to.")
+    ],
     hypothesis: Annotated[str, Field(max_length=_MAX_TEXT, description="The new hypothesis text.")],
 ) -> MatrixRef:
     """Append a new hypothesis column mid-analysis (append-only; prior cells intact). The new column
@@ -137,12 +153,22 @@ def add_hypothesis(
 @mcp.tool
 @_translate_ach_errors
 def rate_cell(
-    matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix this cell belongs to.")],
+    matrix_id: Annotated[
+        str, Field(max_length=_MAX_ID, description="The matrix this cell belongs to.")
+    ],
     evidence_id: Annotated[
-        str, Field(max_length=_MAX_ID, description="The evidence item (as registered in evidence-ledger) being rated.")
+        str,
+        Field(
+            max_length=_MAX_ID,
+            description="The evidence item (as registered in evidence-ledger) being rated.",
+        ),
     ],
     hypothesis_id: Annotated[
-        str, Field(max_length=_MAX_ID, description="The synthetic hypothesis_id from create_matrix / add_hypothesis.")
+        str,
+        Field(
+            max_length=_MAX_ID,
+            description="The synthetic hypothesis_id from create_matrix / add_hypothesis.",
+        ),
     ],
     consistency: Annotated[
         Consistency,
@@ -168,7 +194,11 @@ def rate_cell(
         ),
     ],
     reason: Annotated[
-        str, Field(max_length=_MAX_TEXT, description="Required (non-empty) when superseding an existing rating (a correction).")
+        str,
+        Field(
+            max_length=_MAX_TEXT,
+            description="Required (non-empty) when superseding an existing rating (a correction).",
+        ),
     ] = "",
 ) -> CellRecord:
     """Append a consistency RATING for one (evidence × hypothesis) cell (required input).
@@ -183,12 +213,16 @@ def rate_cell(
     and any cell for that evidence may carry the tag. The control that catches a fabricated rating is the
     HUMAN GATE — review get_matrix before score_matrix — not this tag. (A per-cell confirm token was
     considered and deferred: over stdio it stays caller-asserted, so it would add auditability, not verification.)"""
-    return store.rate_cell(matrix_id, evidence_id, hypothesis_id, consistency, strength, judgment_source, reason)
+    return store.rate_cell(
+        matrix_id, evidence_id, hypothesis_id, consistency, strength, judgment_source, reason
+    )
 
 
 @mcp.tool
 @_translate_ach_errors
-def score_matrix(matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix to rank.")]) -> Ranking:
+def score_matrix(
+    matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix to rank.")],
+) -> Ranking:
     """COMPUTE the ranking by LEAST-TOTAL-INCONSISTENCY (fewest strong inconsistencies leads; ties → fewer
     weak; N/A excluded), flag non-diagnostic evidence. REFUSES if any hypothesis has an unrated cell
     (coverage gap), or any effective cell is stale, model_draft, or evidence not analyst_confirmed-graded
@@ -202,7 +236,9 @@ def score_matrix(matrix_id: Annotated[str, Field(max_length=_MAX_ID, description
 
 @mcp.tool
 @_translate_ach_errors
-def get_matrix(matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix to read.")]) -> Matrix:
+def get_matrix(
+    matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix to read.")],
+) -> Matrix:
     """Read the matrix + effective cells. `stale` is best-effort and MAY lag — score_matrix is the sole
     source of truth for scoring-readiness."""
     return store.get_matrix(matrix_id)
@@ -211,8 +247,12 @@ def get_matrix(matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="
 @mcp.tool
 @_translate_ach_errors
 def list_matrices(
-    case_id: Annotated[str, Field(max_length=_MAX_ID, description="The case whose matrices to list.")],
-    limit: Annotated[int, Field(ge=1, le=1000, description="Max matrices to return (1–1000).")] = 100,
+    case_id: Annotated[
+        str, Field(max_length=_MAX_ID, description="The case whose matrices to list.")
+    ],
+    limit: Annotated[
+        int, Field(ge=1, le=1000, description="Max matrices to return (1–1000).")
+    ] = 100,
     cursor: Annotated[
         str | None, Field(max_length=_MAX_ID, description="Opaque token from a prior next_cursor.")
     ] = None,
@@ -231,9 +271,15 @@ def verify_chain() -> ChainStatus:
 
 
 def main() -> None:
-    for label, st in (("ach-engine", store.verify_chain()), ("evidence-signals", staleness.verify_chain())):
+    for label, st in (
+        ("ach-engine", store.verify_chain()),
+        ("evidence-signals", staleness.verify_chain()),
+    ):
         if not st.ok:
-            print(f"[ach-engine] REFUSING TO SERVE — {label} chain failed: {st.mismatch}", file=sys.stderr)
+            print(
+                f"[ach-engine] REFUSING TO SERVE — {label} chain failed: {st.mismatch}",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
     print("[ach-engine] chains OK; serving on stdio", file=sys.stderr)
     # SF15: transport="stdio", show_banner=False — the default FastMCP banner performs a "newer

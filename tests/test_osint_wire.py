@@ -31,8 +31,14 @@ async def _run() -> None:
     async with Client(mcp) as c:
         names = {t.name for t in await c.list_tools()}
         assert {
-            "search", "fetch", "compute_hash", "extract_exif", "reverse_image_search",
-            "get_map_tile", "propose_to_ledger", "verify_chain",
+            "search",
+            "fetch",
+            "compute_hash",
+            "extract_exif",
+            "reverse_image_search",
+            "get_map_tile",
+            "propose_to_ledger",
+            "verify_chain",
         } <= names
 
         async def expect(tool, args, needle):
@@ -43,22 +49,38 @@ async def _run() -> None:
                 assert needle in str(e), f"{tool}: {e}"
 
         # pre-egress gate blocks a query carrying a case identifier
-        await expect("search", {"query": "dig up SECRET-CASE-42", "connector": "web"}, "case/source identifier")
+        await expect(
+            "search",
+            {"query": "dig up SECRET-CASE-42", "connector": "web"},
+            "case/source identifier",
+        )
         # a clean query passes the gate, then fails closed (live off) — audit ran
-        await expect("search", {"query": "public weather data", "connector": "web"}, "live connector disabled")
+        await expect(
+            "search",
+            {"query": "public weather data", "connector": "web"},
+            "live connector disabled",
+        )
         # fetch provenance: a URL not from a prior result is refused
         await expect("fetch", {"url": "https://api.example-search.invalid/x"}, "did not originate")
         # exact-match provenance passes that check (then fails later at the guard/DNS, not "did not originate")
         srv._session_urls.add("https://api.example-search.invalid/exact")
-        await expect("fetch", {"url": "https://api.example-search.invalid/DIFFERENT"}, "did not originate")
-        await expect("fetch", {"url": "https://api.example-search.invalid/exact"}, "egress guard blocked")
+        await expect(
+            "fetch", {"url": "https://api.example-search.invalid/DIFFERENT"}, "did not originate"
+        )
+        await expect(
+            "fetch", {"url": "https://api.example-search.invalid/exact"}, "egress guard blocked"
+        )
         # SSRF guard blocks a metadata-IP fetch even when confirmed
         await expect(
-            "fetch", {"url": "https://169.254.169.254/latest/meta-data", "confirmed": True}, "egress guard blocked"
+            "fetch",
+            {"url": "https://169.254.169.254/latest/meta-data", "confirmed": True},
+            "egress guard blocked",
         )
         # reverse_image_search requires confirmation (may upload a likeness)
         tok = srv.artifacts.put(b"\xff\xd8\xff\xe0 image bytes")
-        await expect("reverse_image_search", {"artifact_ref": tok, "connector": "image"}, "confirmed=True")
+        await expect(
+            "reverse_image_search", {"artifact_ref": tok, "connector": "image"}, "confirmed=True"
+        )
 
         # local, no-egress tools work
         r = await c.call_tool("compute_hash", {"artifact_ref": tok})
@@ -66,7 +88,12 @@ async def _run() -> None:
         # propose_to_ledger routes an INGESTED, UNGRADED item into evidence-ledger (ach-engine refuses to score it)
         p = await c.call_tool(
             "propose_to_ledger",
-            {"case_id": "c1", "artifact_ref": tok, "source_id": "osint:web", "note": "an ingested page"},
+            {
+                "case_id": "c1",
+                "artifact_ref": tok,
+                "source_id": "osint:web",
+                "note": "an ingested page",
+            },
         )
         eid = p.data.evidence_id
         async with Client(ev_mcp) as ec:
@@ -141,7 +168,9 @@ def test_get_map_tile_requires_confirmation():
     async def _go() -> None:
         async with Client(mcp) as c:
             try:
-                await c.call_tool("get_map_tile", {"lat": 51.5, "lon": -0.12, "zoom": 12, "connector": "map"})
+                await c.call_tool(
+                    "get_map_tile", {"lat": 51.5, "lon": -0.12, "zoom": 12, "connector": "map"}
+                )
                 raise AssertionError("expected ToolError")
             except ToolError as e:
                 assert "confirmed=True" in str(e)
@@ -196,7 +225,9 @@ def test_blocked_screen_leaves_audit_row():
                 except ToolError as e:
                     assert "case/source identifier" in str(e)
             assert blocked_count() == before + 2  # both blocked attempts left an audit trail
-            assert srv.audit.verify_chain().ok is True  # and the audit chain + manifest stay consistent
+            assert (
+                srv.audit.verify_chain().ok is True
+            )  # and the audit chain + manifest stay consistent
 
     asyncio.run(_go())
 
@@ -227,16 +258,20 @@ def test_propose_handles_dict_shaped_ledger_response(monkeypatch):
         async with Client(mcp) as c:
             tok = srv.artifacts.put(b"\xff\xd8\xff\xe0 img")
             # a well-formed DICT result -> evidence_id read from the dict, no AttributeError crash
-            monkeypatch.setattr(srv, "_ledger_client", fake_client({"evidence_id": "ev-dict", "case_id": "c1"}))
+            monkeypatch.setattr(
+                srv, "_ledger_client", fake_client({"evidence_id": "ev-dict", "case_id": "c1"})
+            )
             p = await c.call_tool(
-                "propose_to_ledger", {"case_id": "c1", "artifact_ref": tok, "source_id": "s", "note": "n"}
+                "propose_to_ledger",
+                {"case_id": "c1", "artifact_ref": tok, "source_id": "s", "note": "n"},
             )
             assert p.data.evidence_id == "ev-dict"
             # a shape-drifted dict (no evidence_id) -> a clear ToolError, not an opaque masked error
             monkeypatch.setattr(srv, "_ledger_client", fake_client({"unexpected": "shape"}))
             try:
                 await c.call_tool(
-                    "propose_to_ledger", {"case_id": "c1", "artifact_ref": tok, "source_id": "s", "note": "n"}
+                    "propose_to_ledger",
+                    {"case_id": "c1", "artifact_ref": tok, "source_id": "s", "note": "n"},
                 )
                 raise AssertionError("expected ToolError for a dict missing evidence_id")
             except ToolError as e:
@@ -273,6 +308,7 @@ def test_artifact_ref_cap_enforced_by_schema():
 
     async def _go() -> None:
         async with Client(mcp) as c:
+
             async def err(tool, args) -> str:
                 try:
                     await c.call_tool(tool, args)
@@ -298,16 +334,23 @@ def test_consent_gate_refusals_leave_audit_row():
 
     def blocked_confirm_count():
         return srv.audit._conn.execute(
-            "SELECT COUNT(*) c FROM egress_log WHERE outcome=?", ("blocked (confirmation required)",)
+            "SELECT COUNT(*) c FROM egress_log WHERE outcome=?",
+            ("blocked (confirmation required)",),
         ).fetchone()["c"]
 
     async def _go() -> None:
         async with Client(mcp) as c:
             tok = srv.artifacts.put(b"\xff\xd8\xff\xe0 img")
             cases = [
-                ("fetch", {"url": "https://never-seen-in-any-session.invalid/x"}),  # no provenance, no confirm
+                (
+                    "fetch",
+                    {"url": "https://never-seen-in-any-session.invalid/x"},
+                ),  # no provenance, no confirm
                 ("reverse_image_search", {"artifact_ref": tok, "connector": "image"}),  # no confirm
-                ("get_map_tile", {"lat": 1.0, "lon": 2.0, "zoom": 5, "connector": "map"}),  # no confirm
+                (
+                    "get_map_tile",
+                    {"lat": 1.0, "lon": 2.0, "zoom": 5, "connector": "map"},
+                ),  # no confirm
             ]
             for tool, args in cases:
                 before = blocked_confirm_count()  # relative, so robust to rows left by other tests
@@ -360,11 +403,18 @@ def test_propose_case_id_cap_enforced_by_osint_schema(monkeypatch):
             try:
                 await c.call_tool(
                     "propose_to_ledger",
-                    {"case_id": "x" * (srv._MAX_ID + 1), "artifact_ref": tok, "source_id": "s", "note": "n"},
+                    {
+                        "case_id": "x" * (srv._MAX_ID + 1),
+                        "artifact_ref": tok,
+                        "source_id": "s",
+                        "note": "n",
+                    },
                 )
                 raise AssertionError("expected ToolError for a case_id over osint's own cap")
             except ToolError:
                 pass
-            assert len(calls) == 1  # the oversized call NEVER reached the ledger -> osint's own cap fired
+            assert (
+                len(calls) == 1
+            )  # the oversized call NEVER reached the ledger -> osint's own cap fired
 
     asyncio.run(_go())
