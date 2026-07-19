@@ -141,20 +141,29 @@ mcp_servers/  ach_engine · calibration_tracker · evidence_ledger · osint_tool
 docs/
   design/     phase3-mcp-design.md · phase4-osint-design.md (each gated to must-fix=0)
   validation/ the MVP-0/Phase-2 gates + run results + Brier tooling
-tests/        149 tests — server logic + cross-server wiring + OSINT egress/EXIF
+tests/        234 tests — server logic + cross-server wiring + OSINT egress/EXIF + coverage
 scripts/      check_mermaid.py (mermaid-cli compile) · check_egress_isolation.py · check_coverage.py
 ```
 
 ## Development
 
+Dependencies and the virtual environment are managed with [uv](https://docs.astral.sh/uv/). The environment
+is locked (`uv.lock`) and its Python is pinned (`.python-version`); create or refresh it with:
+
+```bash
+uv sync           # build .venv from uv.lock (runtime deps + the `dev` group)
+uv run pytest     # run the suite in the locked env
+```
+
+The state MCP servers in `.mcp.json` launch via `uv run`, so `uv sync` must have been run first.
+
 Linting and formatting run through [pre-commit](https://pre-commit.com). The hooks cover every file type in
-the repo — Python (`ruff` lint + format), Markdown (`markdownlint` + a custom Mermaid validator), and
+the repo — Python (`ruff` lint + format), Markdown (`markdownlint` + a Mermaid compile check), and
 TOML / JSON / YAML plus whitespace hygiene:
 
 ```bash
-pip install pre-commit         # or: pip install -e '.[dev]'
-pre-commit install             # run the hooks on every git commit
-pre-commit run --all-files     # check the whole repo once
+uv run pre-commit install           # run the hooks on every git commit
+uv run pre-commit run --all-files   # check the whole repo once
 ```
 
 Diagrams in the docs are [Mermaid](https://mermaid.js.org/) fenced code blocks, rendered inline by GitHub.
