@@ -1,7 +1,7 @@
 [project]
 name = "intelligence-analysis-agent"
 version = "0.3.0"
-description = "Intelligence-analysis agent — Phase 3 MCP state layer (calibration-tracker, evidence-ledger, ach-engine)"
+description = "Intelligence-analysis agent — MCP state + OSINT layer (calibration-tracker, evidence-ledger, ach-engine, osint-toolkit)"
 requires-python = ">=3.11"
 dependencies = [
     "fastmcp>=2.3",
