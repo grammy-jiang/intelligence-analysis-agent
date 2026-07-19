@@ -174,7 +174,15 @@ def rate_cell(
     """Append a consistency RATING for one (evidence × hypothesis) cell (required input).
 
     Errors on unknown matrix_id/hypothesis_id, blank evidence_id, an out-of-domain rating value, or an
-    unbacked analyst_confirmed."""
+    unbacked analyst_confirmed.
+
+    Confirmation boundary (the same honest limit as judgment_source / the calibration horizon): here
+    `analyst_confirmed` is EVIDENCE-anchored — it means the evidence carries an out-of-band analyst_confirmed
+    grade in evidence-ledger. It does NOT, and over stdio CANNOT, verify that a human reviewed THIS specific
+    (consistency, strength) value: a superseding re-rate can change the value under the same evidence grade,
+    and any cell for that evidence may carry the tag. The control that catches a fabricated rating is the
+    HUMAN GATE — review get_matrix before score_matrix — not this tag. (A per-cell confirm token was
+    considered and deferred: over stdio it stays caller-asserted, so it would add auditability, not verification.)"""
     return store.rate_cell(matrix_id, evidence_id, hypothesis_id, consistency, strength, judgment_source, reason)
 
 
@@ -184,7 +192,11 @@ def score_matrix(matrix_id: Annotated[str, Field(max_length=_MAX_ID, description
     """COMPUTE the ranking by LEAST-TOTAL-INCONSISTENCY (fewest strong inconsistencies leads; ties → fewer
     weak; N/A excluded), flag non-diagnostic evidence. REFUSES if any hypothesis has an unrated cell
     (coverage gap), or any effective cell is stale, model_draft, or evidence not analyst_confirmed-graded
-    — enumerating the blocking cells in the error."""
+    — enumerating the blocking cells in the error.
+
+    The analyst_confirmed gate is EVIDENCE-anchored, not per-rating verified (see rate_cell): a passing score
+    means every cell's evidence is confirmed-graded and fresh, NOT that a human vetted each (consistency,
+    strength) value — review the effective cells via get_matrix before trusting a ranking."""
     return store.score_matrix(matrix_id)
 
 

@@ -318,8 +318,12 @@ class ACHStore:
         # grade signal (written by evidence-ledger, a separate actor) — the "grade_signals-style
         # cross-store signal" that ties confirmation to a human action rather than the calling agent.
         # An agent's own draft must be recorded as `model_draft` (and is blocked by score_matrix until
-        # re-rated). Residual: the per-evidence signal does not bind a *specific* rating, so a fully
-        # separate per-cell confirm tool would be a stronger control — tracked, not closed here.
+        # re-rated). Residual A (reviewed → owner decision): the per-evidence signal does not bind a *specific*
+        # rating — a confirm-then-re-rate, or a new cell reusing the same confirmed evidence, is accepted. This
+        # is EVIDENCE-anchored, not per-rating, confirmation; it is disclosed as such in the rate_cell /
+        # score_matrix tool docs, and the HUMAN GATE (review get_matrix before score_matrix) is the control. A
+        # per-cell confirm token was considered and DEFERRED: over stdio it stays caller-asserted, so it would
+        # add auditability, not true verification (same honest limit as judgment_source / the calibration horizon).
         if (
             judgment_source == "analyst_confirmed"
             and self.staleness.latest_grade_source(evidence_id) != "analyst_confirmed"
