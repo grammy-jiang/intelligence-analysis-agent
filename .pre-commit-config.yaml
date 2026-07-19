@@ -2,7 +2,7 @@
 #
 # Coverage by file type found in this repo:
 #   Python  (.py)          ruff — lint (+ autofix) and format
-#   Markdown (.md)         markdownlint-cli2 + a custom Mermaid diagram validator
+#   Markdown (.md)         markdownlint-cli2 + a Mermaid compile check (mermaid-cli)
 #   TOML    (.toml)        check-toml   (pyproject.toml)
 #   JSON    (.json)        check-json   (.mcp.json)
 #   YAML    (.yaml/.yml)   check-yaml   (this config, future CI workflows)
@@ -11,8 +11,8 @@
 #
 # The vendored, re-exported product under .claude/ (the reviewer subagents and
 # skill modules — "do not edit; re-export to update") authors Markdown in its
-# own conventions, so it is excluded from the Markdown *linter*. The read-only
-# Mermaid validator still runs everywhere, since it only reports and never edits.
+# own conventions, so it is excluded from the Markdown *linter*. The Mermaid
+# compile check still runs on all Markdown, since it only reads.
 #
 # Setup:
 #   pip install pre-commit
@@ -67,12 +67,16 @@ repos:
       - id: markdownlint-cli2
         exclude: ^\.claude/
 
-  # --- Markdown: Mermaid diagram validation (custom, repo-local) -------------
+  # --- Markdown: Mermaid diagram compilation (mermaid-cli, repo-local) -------
+  # Compiles every fenced mermaid block with mmdc (@mermaid-js/mermaid-cli) — the
+  # real Mermaid compiler, not a re-implementation. It needs Node + a headless
+  # browser, so CI runs it as a dedicated job and SKIPs it in the lint job;
+  # locally it self-bootstraps mmdc via npx.
   - repo: local
     hooks:
-      - id: validate-mermaid
-        name: Validate Mermaid diagrams
-        description: Structural validation of ```mermaid code blocks in Markdown.
-        entry: scripts/validate_mermaid.py
+      - id: mermaid-compile
+        name: Compile Mermaid diagrams (mermaid-cli)
+        description: Compile every fenced mermaid block with mmdc; fail on invalid syntax.
+        entry: scripts/check_mermaid.py
         language: script
         types: [markdown]
