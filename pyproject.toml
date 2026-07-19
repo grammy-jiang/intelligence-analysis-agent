@@ -27,7 +27,9 @@ omit = ["*/__main__.py"] # thin `python -m` entry-point shims
 
 [tool.coverage.report]
 show_missing = true
-fail_under = 80 # current line coverage is ~85%; this floor guards against regression
+# Total backstop; the binding constraint is the per-module gate in
+# scripts/check_coverage.py (core >= 95%, others >= 90%), run in CI.
+fail_under = 90
 exclude_also = [
     "if __name__ == .__main__.:",
     "if TYPE_CHECKING:",
