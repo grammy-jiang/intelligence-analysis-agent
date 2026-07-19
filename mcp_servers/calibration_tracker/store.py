@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
+import io
 import json
 import os
 import sqlite3
@@ -87,7 +88,7 @@ class CalibrationStore:
         # S3: the RLock only serializes threads inside ONE process. Take an OS-level exclusive advisory
         # lock on a sidecar so a SECOND process opening the same file DB fails closed instead of forking
         # the append-only chain (single-writer-local design). :memory: DBs have no cross-process sharing.
-        self._lock_fh = None
+        self._lock_fh: io.TextIOWrapper | None = None
         if db_path != ":memory:":
             self._acquire_process_lock(db_path)
         # check_same_thread=False (N3): defensive — a future FastMCP dispatch model may run tool bodies on

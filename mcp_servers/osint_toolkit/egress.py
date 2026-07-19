@@ -60,7 +60,7 @@ def _parse_ip_literal(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Addres
 
 def _default_resolver(host: str) -> list[str]:
     try:
-        return list({info[4][0] for info in socket.getaddrinfo(host, None)})
+        return list({str(info[4][0]) for info in socket.getaddrinfo(host, None)})
     except (socket.gaierror, UnicodeError, OSError):
         # S10: gaierror is the common case, but an IDNA-invalid host raises UnicodeError and other name-service
         # failures raise plain OSError; all must resolve to "no IPs" (→ fail-closed EgressError) rather than

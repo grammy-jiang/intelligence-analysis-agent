@@ -14,18 +14,22 @@ import threading
 import time
 import uuid
 from collections.abc import Callable
+from typing import cast
 
 from ..common import GENESIS, ChainMismatch, ChainStatus, now_iso, row_hash
 from ..staleness import StalenessStore
 from .models import (
     Cell,
     CellRecord,
+    Consistency,
     HypothesisItem,
+    JudgmentSource,
     Matrix,
     MatrixList,
     MatrixRef,
     RankItem,
     Ranking,
+    Strength,
 )
 
 _TABLES = ("matrices", "hypotheses", "cells")
@@ -368,8 +372,10 @@ class ACHStore:
                 )
             self._append_manifest("cells", rh)  # after commit
         return CellRecord(
-            matrix_id=matrix_id, evidence_id=evidence_id, hypothesis_id=hypothesis_id, consistency=consistency,
-            strength=strength, judgment_source=judgment_source, reason=reason, rated_at=rated_at,
+            matrix_id=matrix_id, evidence_id=evidence_id, hypothesis_id=hypothesis_id,
+            # domains are enforced above (raise on out-of-domain), so these casts are sound, not blind.
+            consistency=cast(Consistency, consistency), strength=cast(Strength, strength),
+            judgment_source=cast(JudgmentSource, judgment_source), reason=reason, rated_at=rated_at,
             # M5: report the truth — a rating that supersedes a prior effective cell is a correction.
             superseded=superseded, row_hash=rh,
         )
