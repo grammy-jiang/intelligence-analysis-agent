@@ -93,3 +93,47 @@ def test_signals_chain_detects_tamper(tmp_path):
         assert s.ok is False and s.mismatch.table == "grade_signals"
     finally:
         st.close()
+
+
+def test_signals_chain_detects_tail_truncation(tmp_path):
+    """MUST-fix: deleting the TRAILING grade_signals row — e.g. erasing a model_draft downgrade so
+    latest_grade_source() reverts to the earlier analyst_confirmed — leaves a self-consistent but shorter
+    chain. The forward-only row walk alone PASSES it (silently forging the collect-then-grade gate
+    score_matrix trusts); the manifest head+count anchor must FAIL it."""
+    db = str(tmp_path / "stale.db")
+    st = StalenessStore(db)
+    try:
+        st.mark_graded("E1", "analyst_confirmed")
+        st.mark_graded("E1", "model_draft")  # the downgrade an attacker wants to erase
+        assert st.latest_grade_source("E1") == "model_draft"
+        assert st.verify_chain().ok is True
+
+        raw = sqlite3.connect(db)
+        raw.execute("DELETE FROM grade_signals WHERE seq=(SELECT MAX(seq) FROM grade_signals)")
+        raw.commit()
+        raw.close()
+
+        # the attack succeeds on the DATA — the downgrade is now hidden...
+        assert st.latest_grade_source("E1") == "analyst_confirmed"
+        # ...but integrity must catch it: the manifest still attests 2 rows / the later head.
+        s = st.verify_chain()
+        assert s.ok is False and s.mismatch.table == "grade_signals"
+    finally:
+        st.close()
+
+
+def test_signals_chain_missing_manifest_fails_closed(tmp_path):
+    """A non-empty signal chain with NO manifest file at all (e.g. the file was deleted to erase the
+    truncation evidence) must fail closed — a missing manifest is treated as tampering, not a vacuous pass."""
+    import os
+
+    db = str(tmp_path / "stale.db")
+    st = StalenessStore(db)
+    try:
+        st.mark_graded("E1", "analyst_confirmed")
+        assert st.verify_chain().ok is True
+        os.remove(db + ".manifest.jsonl")
+        s = st.verify_chain()
+        assert s.ok is False and s.mismatch.row_id == "<manifest-missing>"
+    finally:
+        st.close()
