@@ -1,6 +1,10 @@
 # intelligence-analysis-agent
 
 [![CI](https://github.com/grammy-jiang/intelligence-analysis-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/grammy-jiang/intelligence-analysis-agent/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
+[![FastMCP](https://img.shields.io/badge/MCP-FastMCP%203.x-blue)](https://github.com/jlowin/fastmcp)
 
 A composed AI agent that runs the **intelligence-analysis / analytic-tradecraft workflow** — frame a
 question, enumerate competing hypotheses, weigh evidence in an ACH matrix ranked by *disconfirmation*, get
