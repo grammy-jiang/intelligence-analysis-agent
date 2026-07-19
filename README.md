@@ -142,7 +142,7 @@ docs/
   design/     phase3-mcp-design.md · phase4-osint-design.md (each gated to must-fix=0)
   validation/ the MVP-0/Phase-2 gates + run results + Brier tooling
 tests/        149 tests — server logic + cross-server wiring + OSINT egress/EXIF
-scripts/      validate_mermaid.py — the custom Mermaid pre-commit hook
+scripts/      check_mermaid.py (mermaid-cli compile) · check_egress_isolation.py · check_coverage.py
 ```
 
 ## Development
@@ -158,10 +158,11 @@ pre-commit run --all-files     # check the whole repo once
 ```
 
 Diagrams in the docs are [Mermaid](https://mermaid.js.org/) fenced code blocks, rendered inline by GitHub.
-`scripts/validate_mermaid.py` — wired as a repo-local hook — checks every fenced `mermaid` block for a valid
-diagram type, balanced brackets, and a closed fence, so a broken diagram can't land in the docs. Ruff rules
-live in `pyproject.toml`; Markdown rules in `.markdownlint-cli2.jsonc` (the vendored `.claude/` product is
-excluded from the Markdown linter, not from the read-only Mermaid check).
+`scripts/check_mermaid.py` compiles every fenced `mermaid` block with the real Mermaid compiler
+([`mmdc`](https://github.com/mermaid-js/mermaid-cli)) — wired as a repo-local pre-commit hook and, because it
+needs Node + a headless browser, as its own CI job — so a diagram that doesn't render can't land in the docs.
+Ruff rules live in `pyproject.toml`; Markdown rules in `.markdownlint-cli2.jsonc` (the vendored `.claude/`
+product is excluded from the Markdown linter, not from the Mermaid check).
 
 CI (`.github/workflows/ci.yml`) runs on every push to `master` and every pull request: the pre-commit hooks
 above; the test suite on Python 3.11–3.13 (plus 3.14 as an allowed-to-fail preview) under coverage with a

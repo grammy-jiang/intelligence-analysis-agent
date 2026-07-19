@@ -30,7 +30,9 @@ jobs:
         with:
           path: ~/.cache/pre-commit
           key: pre-commit-${{ runner.os }}-${{ hashFiles('.pre-commit-config.yaml') }}
-      - name: Run all hooks (ruff, markdownlint, Mermaid, hygiene)
+      - name: Run hooks (ruff, markdownlint, hygiene; Mermaid has its own job)
+        env:
+          SKIP: mermaid-compile # needs Node + a browser — see the `mermaid` job
         run: pre-commit run --all-files --show-diff-on-failure
 
   egress-isolation:
@@ -44,25 +46,34 @@ jobs:
       - name: Assert the data servers import no network modules
         run: python scripts/check_egress_isolation.py
 
+  mermaid:
+    name: Mermaid diagrams compile (mermaid-cli)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+      - name: Install mermaid-cli
+        run: npm install -g @mermaid-js/mermaid-cli@11
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Compile every fenced Mermaid block
+        run: python scripts/check_mermaid.py $(git ls-files '*.md')
+
   test:
     name: Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    # 3.14 is exercised but allowed to fail until every dependency ships 3.14 wheels;
-    # promote it to a required version by dropping `experimental` once it is green.
-    continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
-        include:
-          - python-version: "3.14"
-            experimental: true
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
-          allow-prereleases: true
           cache: pip
           cache-dependency-path: pyproject.toml
       - name: Install (latest deps — fastmcp 3.x)
