@@ -1,0 +1,78 @@
+# Pre-commit hooks for intelligence-analysis-agent.
+#
+# Coverage by file type found in this repo:
+#   Python  (.py)          ruff — lint (+ autofix) and format
+#   Markdown (.md)         markdownlint-cli2 + a custom Mermaid diagram validator
+#   TOML    (.toml)        check-toml   (pyproject.toml)
+#   JSON    (.json)        check-json   (.mcp.json)
+#   YAML    (.yaml/.yml)   check-yaml   (this config, future CI workflows)
+#   every file             whitespace / EOF / line-ending / large-file /
+#                          merge-conflict / private-key hygiene
+#
+# The vendored, re-exported product under .claude/ (the reviewer subagents and
+# skill modules — "do not edit; re-export to update") authors Markdown in its
+# own conventions, so it is excluded from the Markdown *linter*. The read-only
+# Mermaid validator still runs everywhere, since it only reports and never edits.
+#
+# Setup:
+#   pip install pre-commit
+#   pre-commit install            # run automatically on `git commit`
+#   pre-commit run --all-files    # run against the whole repo once
+minimum_pre_commit_version: "3.5.0"
+
+default_language_version:
+  python: python3
+
+# .gitignore is a generated file (toptal gitignore API) — skip it in every hook.
+exclude: (^|/)\.gitignore$
+
+repos:
+  # --- General hygiene -------------------------------------------------------
+  # File-*modifying* hooks skip the vendored .claude/ product (re-exported from
+  # the factory — "do not edit"); read-only checks below still cover it.
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md] # keep intentional Markdown hard breaks
+        exclude: ^\.claude/|(^|/)\.gitignore$
+      - id: end-of-file-fixer
+        exclude: ^\.claude/|(^|/)\.gitignore$
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: ^\.claude/|(^|/)\.gitignore$
+      - id: check-added-large-files
+      - id: check-merge-conflict
+      - id: check-case-conflict
+      - id: detect-private-key # PII/security-conscious repo — never commit a key
+      - id: check-yaml
+      - id: check-toml
+      - id: check-json
+        exclude: \.jsonc$ # .jsonc (config with comments) is not strict JSON
+
+  # --- Python: lint + format -------------------------------------------------
+  # Pinned to match the ruff version this repo was normalized with; rules live
+  # in pyproject.toml ([tool.ruff]).
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.8
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # --- Markdown: style lint (repo docs only; .claude/ product excluded) ------
+  - repo: https://github.com/DavidAnson/markdownlint-cli2
+    rev: v0.23.1
+    hooks:
+      - id: markdownlint-cli2
+        exclude: ^\.claude/
+
+  # --- Markdown: Mermaid diagram validation (custom, repo-local) -------------
+  - repo: local
+    hooks:
+      - id: validate-mermaid
+        name: Validate Mermaid diagrams
+        description: Structural validation of ```mermaid code blocks in Markdown.
+        entry: scripts/validate_mermaid.py
+        language: script
+        types: [markdown]

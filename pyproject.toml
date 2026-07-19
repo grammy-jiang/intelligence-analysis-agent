@@ -4,12 +4,12 @@ version = "0.3.0"
 description = "Intelligence-analysis agent — MCP state + OSINT layer (calibration-tracker, evidence-ledger, ach-engine, osint-toolkit)"
 requires-python = ">=3.11"
 dependencies = [
-    "fastmcp>=2.3",
+    "fastmcp>=3,<4",
     "Pillow>=10",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "pre-commit>=3.5"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -17,3 +17,36 @@ pythonpath = ["."]
 
 [tool.setuptools.packages.find]
 include = ["mcp_servers*"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+# Rule families (the S/bandit + BLE selections match the existing
+# `# noqa: S608` / `# noqa: BLE001` directives already in the code):
+#   E/W pycodestyle · F pyflakes · I isort · UP pyupgrade · B bugbear
+#   C4 comprehensions · SIM simplify · S flake8-bandit (security)
+#   BLE blind-except · RUF ruff-specific
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "S", "BLE", "RUF"]
+ignore = [
+    # Left to the formatter, which wraps code but deliberately leaves the
+    # servers' long prose tool docstrings intact.
+    "E501",   # line-too-long
+    # Prose in this repo intentionally uses typographic characters
+    # (× for "evidence × hypothesis", en dashes in ranges/asides).
+    "RUF001", # ambiguous-unicode-character-string
+    "RUF002", # ambiguous-unicode-character-docstring
+    "RUF003", # ambiguous-unicode-character-comment
+    # House style is a clean domain error with the cause embedded in the
+    # message (f"...: {e}"), not an explicit `raise ... from` chain.
+    "B904",   # raise-without-from-inside-except
+    # Best-effort hardening (e.g. chmod on a managed dir) is written as an
+    # explicit try/except with a rationale comment, not contextlib.suppress.
+    "SIM105", # suppressible-exception
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests: asserts are the point (S101); throwaway unpacking and mutable
+# fixtures on local test doubles are fine.
+"tests/**" = ["S101", "RUF059", "RUF012"]

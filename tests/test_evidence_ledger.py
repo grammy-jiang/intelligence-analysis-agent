@@ -22,7 +22,9 @@ def ev(tmp_path):
 
 
 def test_add_grade_get(ev):
-    ref = ev.add_evidence("c1", "a report", "src1", "report", False, "analyst_typed", {"h1": "should see X"})
+    ref = ev.add_evidence(
+        "c1", "a report", "src1", "report", False, "analyst_typed", {"h1": "should see X"}
+    )
     rec = ev.grade_evidence(ref.evidence_id, "B", "2", "diagnostic vs h1", "analyst_confirmed")
     assert rec.grades[-1].reliability == "B" and rec.grades[-1].credibility == "2"
     assert rec.expected_observables == {"h1": "should see X"}
@@ -154,7 +156,9 @@ def test_second_writer_refused(tmp_path):  # SF3
         st.close()
 
 
-def test_grade_existence_check_runs_inside_write_lock(ev, tracked_lock):  # M1 (TOCTOU: check-then-act atomic)
+def test_grade_existence_check_runs_inside_write_lock(
+    ev, tracked_lock
+):  # M1 (TOCTOU: check-then-act atomic)
     # The first-grade / has-prior-grade check must execute INSIDE the write-lock critical section, not
     # before it (old code checked in the public method, before the lock — two concurrent first grades
     # could both observe "no grade" and both insert). We prove atomicity by recording the lock depth at
@@ -170,9 +174,13 @@ def test_grade_existence_check_runs_inside_write_lock(ev, tracked_lock):  # M1 (
     ev._effective_grade = probe
     ref = ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed")
     ev.grade_evidence(ref.evidence_id, "B", "2", "d", "analyst_confirmed")  # first grade
-    ev.update_grade(ref.evidence_id, "A", "1", "d", "corroboration", "analyst_confirmed")  # superseding
+    ev.update_grade(
+        ref.evidence_id, "A", "1", "d", "corroboration", "analyst_confirmed"
+    )  # superseding
     assert depths  # the check ran
-    assert all(d > 0 for d in depths)  # every existence check happened while the write lock was held
+    assert all(
+        d > 0 for d in depths
+    )  # every existence check happened while the write lock was held
 
 
 def test_list_evidence_bad_limit_is_loud(ev):  # S4 (fail loud, not silent clamp)
@@ -186,7 +194,15 @@ def test_list_evidence_bad_limit_is_loud(ev):  # S4 (fail loud, not silent clamp
 def test_mask_error_details_enabled():  # M3 (raw internal errors not surfaced to the client)
     from mcp_servers.evidence_ledger import server
 
-    assert server.mcp._tool_manager.mask_error_details is True
+    # fastmcp exposes no public accessor for this flag and has stored it in
+    # different private spots across releases (3.x: mcp._mask_error_details;
+    # 2.x: mcp._tool_manager.mask_error_details). Probe the known locations so
+    # the M3 invariant stays asserted across a fastmcp version bump.
+    mcp = server.mcp
+    flag = getattr(mcp, "_mask_error_details", None)
+    if flag is None and hasattr(mcp, "_tool_manager"):
+        flag = getattr(mcp._tool_manager, "mask_error_details", None)
+    assert flag is True
 
 
 def test_unredact_gate_denied_by_default(monkeypatch):  # MF2 (tool-layer host gate)
@@ -200,7 +216,9 @@ def test_unredact_gate_denied_by_default(monkeypatch):  # MF2 (tool-layer host g
     server._require_unredact_permitted(redact_pii=False)  # host opt-in permits it
 
 
-def test_unredact_gate_rejects_falsey_env_values(monkeypatch):  # MF-2 (truthiness, not env-var presence)
+def test_unredact_gate_rejects_falsey_env_values(
+    monkeypatch,
+):  # MF-2 (truthiness, not env-var presence)
     from mcp_servers.evidence_ledger import server
 
     # A NON-EMPTY but falsey value (an operator setting =0 / =false to DISABLE unredaction) must still deny —
@@ -225,7 +243,9 @@ def test_store_rejects_out_of_domain_judgment_source(ev):  # MF-1(a): store-laye
         ev.grade_evidence(ref.evidence_id, "B", "2", "d", "totally_trusted")
 
 
-def test_add_evidence_store_length_caps(ev):  # review item #6: store-layer DoS closure (append-only, no reclamation)
+def test_add_evidence_store_length_caps(
+    ev,
+):  # review item #6: store-layer DoS closure (append-only, no reclamation)
     # The tool boundary only capped the ENTRY COUNT of expected_observables (256) — a single entry with a giant
     # VALUE (e.g. {"h": "A"*50_000_000}) slipped straight through to the append-only row. The store now caps each
     # observable value AND key, plus the other free-text fields — a direct store caller cannot inflate the chain.
@@ -239,7 +259,9 @@ def test_add_evidence_store_length_caps(ev):  # review item #6: store-layer DoS 
         ev.add_evidence("c" * 513, "x", "src1", "report", False, "analyst_typed")
 
 
-def test_insert_grade_store_length_caps(ev):  # review item #6: store-layer caps on the free-text grade strings
+def test_insert_grade_store_length_caps(
+    ev,
+):  # review item #6: store-layer caps on the free-text grade strings
     ref = ev.add_evidence("c1", "x", "src1", "report", False, "analyst_typed")
     with pytest.raises(EvidenceError, match="diagnosticity exceeds max length"):
         ev.grade_evidence(ref.evidence_id, "B", "2", "d" * 10_001, "analyst_confirmed")
@@ -247,7 +269,9 @@ def test_insert_grade_store_length_caps(ev):  # review item #6: store-layer caps
         ev.grade_evidence(ref.evidence_id, "B", "2", "d", "analyst_confirmed", "r" * 10_001)
 
 
-def test_failed_insert_rolls_back_no_dangling_transaction(ev):  # review item #5 (atomic `with self._conn:`)
+def test_failed_insert_rolls_back_no_dangling_transaction(
+    ev,
+):  # review item #5 (atomic `with self._conn:`)
     # A failed INSERT must roll back cleanly, NOT leave a dangling OPEN transaction that a later commit could
     # smuggle into the append-only ledger. Force a UNIQUE(evidence_id) violation and assert the connection
     # holds no open transaction afterward — the old execute()+commit() idiom left in_transaction=True here.
@@ -256,11 +280,15 @@ def test_failed_insert_rolls_back_no_dangling_transaction(ev):  # review item #5
     from mcp_servers.evidence_ledger import store as store_mod
 
     with mock.patch.object(store_mod.uuid, "uuid4") as u:
-        u.return_value.hex = "FIXEDDUPLICATEID"  # both adds mint the same evidence_id -> 2nd hits UNIQUE
+        u.return_value.hex = (
+            "FIXEDDUPLICATEID"  # both adds mint the same evidence_id -> 2nd hits UNIQUE
+        )
         ev.add_evidence("c1", "a", "s", "report", False, "analyst_typed")
         with pytest.raises(sqlite3.IntegrityError):
             ev.add_evidence("c1", "b", "s", "report", False, "analyst_typed")
-    assert ev._conn.in_transaction is False  # the failed insert rolled back; no dangling transaction
+    assert (
+        ev._conn.in_transaction is False
+    )  # the failed insert rolled back; no dangling transaction
     # the ledger stays usable + consistent after the rolled-back failure
     ev.add_evidence("c1", "c", "s", "report", False, "analyst_typed")
     assert ev.verify_chain().ok is True

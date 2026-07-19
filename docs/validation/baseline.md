@@ -11,6 +11,7 @@ deterrent message. A dramatic recent defector report of an IIS terror plot is al
 Saddam will not risk further US retaliation so soon after being hit.
 
 **Hypotheses considered:**
+
 - H1: Iraq retaliates soon (terrorism against US targets).
 - H2: Iraq does not retaliate (deterred).
 

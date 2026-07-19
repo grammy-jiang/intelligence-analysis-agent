@@ -28,6 +28,46 @@ tamper-evident store and compute for cross-case learning.
 A case still runs **in-context as prose**; the MCP state layer is opt-in durability, not a rewrite of the
 method. External collection is **off by default** and confined to a single audited egress surface.
 
+## Architecture
+
+How a case flows at runtime — the agent structures and challenges the reasoning, the reviewer subagents
+critique it, the MCP layer persists it, and **no judgment commits until a human approves**:
+
+```mermaid
+flowchart TB
+    Analyst["Human analyst — owns the judgment"]
+    subgraph Agent["Claude Code · structured-analysis skill"]
+        Skill["11-step workflow:<br/>frame → hypotheses → ACH → judgment"]
+        Doing["source-evaluation · calibrated-forecasting"]
+    end
+    subgraph Critics["Reviewer subagents · read-only critique"]
+        Bias["bias-perception"]
+        Method["analytic-method"]
+        Calib["calibration-forecasting"]
+        Decep["deception-detection"]
+    end
+    subgraph MCP["MCP state layer · append-only · hash-chained"]
+        ACH["ach-engine"]
+        Ledger["evidence-ledger"]
+        Cal["calibration-tracker"]
+    end
+    OSINT["osint-toolkit<br/>sole egress · SSRF-guarded"]
+    Web(["Public OSINT sources"])
+    Gate{"Human gate:<br/>approve?"}
+    Commit["Calibrated judgment committed"]
+
+    Analyst --> Skill
+    Skill --> Doing
+    Skill --> Critics
+    Skill <--> MCP
+    Web <-->|OSINT_LIVE gated| OSINT
+    OSINT -->|ungraded proposals| Ledger
+    Skill --> Gate
+    Critics --> Gate
+    Gate -->|approved| Commit
+    Gate -->|failed review| Skill
+```
+
 ## Validation
 
 - **MVP-0 / Phase 1 gate — PASS** (`docs/validation/results-2026-07-10.md`, Heuer Iraqi-retaliation ACH):
@@ -69,7 +109,7 @@ trusted local binding, **not** an LLM argument — and are honestly bounded (ski
 Open Claude Code in this repo (the `.claude/` here provides the skill + the reviewer subagents; `.mcp.json`
 provides the state servers), then:
 
-```
+```text
 /structured-analysis
 ```
 
@@ -84,7 +124,7 @@ Work a case per session in this repo.
 
 ## Layout
 
-```
+```text
 .claude/
   agents/     the 4 reviewer subagents (deployed from the factory — do not edit; re-export to update)
   skills/     structured-analysis (orchestrator) + source-evaluation + calibrated-forecasting
@@ -94,7 +134,26 @@ docs/
   design/     phase3-mcp-design.md · phase4-osint-design.md (each gated to must-fix=0)
   validation/ the MVP-0/Phase-2 gates + run results + Brier tooling
 tests/        149 tests — server logic + cross-server wiring + OSINT egress/EXIF
+scripts/      validate_mermaid.py — the custom Mermaid pre-commit hook
 ```
+
+## Development
+
+Linting and formatting run through [pre-commit](https://pre-commit.com). The hooks cover every file type in
+the repo — Python (`ruff` lint + format), Markdown (`markdownlint` + a custom Mermaid validator), and
+TOML / JSON / YAML plus whitespace hygiene:
+
+```bash
+pip install pre-commit         # or: pip install -e '.[dev]'
+pre-commit install             # run the hooks on every git commit
+pre-commit run --all-files     # check the whole repo once
+```
+
+Diagrams in the docs are [Mermaid](https://mermaid.js.org/) fenced code blocks, rendered inline by GitHub.
+`scripts/validate_mermaid.py` — wired as a repo-local hook — checks every fenced `mermaid` block for a valid
+diagram type, balanced brackets, and a closed fence, so a broken diagram can't land in the docs. Ruff rules
+live in `pyproject.toml`; Markdown rules in `.markdownlint-cli2.jsonc` (the vendored `.claude/` product is
+excluded from the Markdown linter, not from the read-only Mermaid check).
 
 ## Design of record
 
