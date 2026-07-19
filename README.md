@@ -1,7 +1,9 @@
 # intelligence-analysis-agent
 
 [![CI](https://github.com/grammy-jiang/intelligence-analysis-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/grammy-jiang/intelligence-analysis-agent/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/grammy-jiang/intelligence-analysis-agent/branch/master/graph/badge.svg)](https://codecov.io/gh/grammy-jiang/intelligence-analysis-agent)
 [![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-blue?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![pre-commit](https://img.shields.io/badge/pre--commit-enabled-brightgreen?logo=pre-commit&logoColor=white)](https://github.com/pre-commit/pre-commit)
 [![FastMCP](https://img.shields.io/badge/MCP-FastMCP%203.x-blue)](https://github.com/jlowin/fastmcp)
