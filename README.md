@@ -1,5 +1,7 @@
 # intelligence-analysis-agent
 
+[![CI](https://github.com/grammy-jiang/intelligence-analysis-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/grammy-jiang/intelligence-analysis-agent/actions/workflows/ci.yml)
+
 A composed AI agent that runs the **intelligence-analysis / analytic-tradecraft workflow** — frame a
 question, enumerate competing hypotheses, weigh evidence in an ACH matrix ranked by *disconfirmation*, get
 independent bias / method / calibration critique, and commit a calibrated judgment **only after a human
@@ -154,6 +156,12 @@ Diagrams in the docs are [Mermaid](https://mermaid.js.org/) fenced code blocks, 
 diagram type, balanced brackets, and a closed fence, so a broken diagram can't land in the docs. Ruff rules
 live in `pyproject.toml`; Markdown rules in `.markdownlint-cli2.jsonc` (the vendored `.claude/` product is
 excluded from the Markdown linter, not from the read-only Mermaid check).
+
+CI (`.github/workflows/ci.yml`) runs on every push to `master` and every pull request: the pre-commit hooks
+above; the test suite on Python 3.11–3.13 (plus 3.14 as an allowed-to-fail preview) under coverage with a
+`fail_under` floor (currently ~85%); and an **egress-isolation** gate (`scripts/check_egress_isolation.py`)
+that fails the build if a data server (calibration-tracker / evidence-ledger / ach-engine) gains a direct
+network import — enforcing the design's *"osint-toolkit is the sole egress surface"* invariant.
 
 ## Design of record
 
