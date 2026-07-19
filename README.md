@@ -158,7 +158,8 @@ live in `pyproject.toml`; Markdown rules in `.markdownlint-cli2.jsonc` (the vend
 excluded from the Markdown linter, not from the read-only Mermaid check).
 
 CI (`.github/workflows/ci.yml`) runs on every push to `master` and every pull request: the pre-commit hooks
-above, the test suite on Python 3.11–3.13, and an **egress-isolation** gate (`scripts/check_egress_isolation.py`)
+above; the test suite on Python 3.11–3.13 (plus 3.14 as an allowed-to-fail preview) under coverage with a
+`fail_under` floor (currently ~85%); and an **egress-isolation** gate (`scripts/check_egress_isolation.py`)
 that fails the build if a data server (calibration-tracker / evidence-ledger / ach-engine) gains a direct
 network import — enforcing the design's *"osint-toolkit is the sole egress surface"* invariant.
 
