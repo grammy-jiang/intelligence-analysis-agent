@@ -27,7 +27,9 @@ class Grade(BaseModel):
     reliability: Reliability
     credibility: Credibility
     diagnosticity: str  # narrative only — does NOT feed score_matrix
-    analyst_id: str  # MF6: WHO made this judgment — a trusted local binding, folded into the row hash
+    analyst_id: (
+        str  # MF6: WHO made this judgment — a trusted local binding, folded into the row hash
+    )
     judgment_source: JudgmentSource
     rationale: str = ""
     reason: str = ""

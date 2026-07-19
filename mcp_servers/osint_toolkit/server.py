@@ -94,7 +94,9 @@ def _screen(text: str) -> None:
     for ident in CASE_IDENTIFIERS:
         needle = _norm_screen(ident)
         if needle and needle in normalized:
-            raise ToolError("pre-egress gate: outgoing text carries a case/source identifier; blocked")
+            raise ToolError(
+                "pre-egress gate: outgoing text carries a case/source identifier; blocked"
+            )
 
 
 def _screen_or_audit(tool: str, text: str, fields: dict) -> None:
@@ -132,7 +134,9 @@ def search(
     _screen_or_audit("search", query, {"connector": connector, "max_results": max_results})
     audit.record("search", {"connector": connector, "max_results": max_results}, "-", "attempt")
     if not OSINT_LIVE:
-        raise ToolError("live connector disabled (set OSINT_LIVE=1 + configure keys). Guard/gate/audit ran.")
+        raise ToolError(
+            "live connector disabled (set OSINT_LIVE=1 + configure keys). Guard/gate/audit ran."
+        )
     raise ToolError("no live connector configured for this deployment")  # follow-on: real service
 
 
@@ -156,10 +160,14 @@ def fetch(
     # refusal is AUDITED before raising, so a blocked freeform-fetch attempt leaves a trace like every other
     # egress attempt. The predicate passes when the URL has provenance OR the analyst confirmed the override.
     _require_confirmed_or_audit(
-        "fetch", url in _session_urls or confirmed, {"host": "?"},
+        "fetch",
+        url in _session_urls or confirmed,
+        {"host": "?"},
         "url did not originate from a prior in-session search result; pass confirmed=True",
     )
-    _screen_or_audit("fetch", url, {"host": "?"})  # MF1: a blocked exfil URL still leaves an audit row
+    _screen_or_audit(
+        "fetch", url, {"host": "?"}
+    )  # MF1: a blocked exfil URL still leaves an audit row
     try:
         host, ip = validate_url(url)  # fetch = SSRF blocklist (no per-connector allowlist)
     except EgressError as e:
@@ -167,12 +175,16 @@ def fetch(
         # audit `outcome` column AND the client-visible ToolError host/IP-free; host/IP live in the audit DB only.
         audit.record("fetch", {"host": "?"}, "-", "blocked (pre-fetch guard)")
         print(f"[osint-toolkit] pre-fetch guard block: {e!r}", file=sys.stderr)
-        raise ToolError("egress guard blocked the URL (host/IP recorded in the audit log only)") from e
+        raise ToolError(
+            "egress guard blocked the URL (host/IP recorded in the audit log only)"
+        ) from e
     if not OSINT_LIVE:
         audit.record("fetch", {"host": host}, ip, "attempt (live off)")
         # S8: do not echo the resolved IP back to the client (a resolution oracle reachable with live off via
         # confirmed=True). The pinned IP is recorded in the audit log only.
-        raise ToolError("live fetch disabled (set OSINT_LIVE=1). Guard/gate/audit ran; IP pinned in the audit log.")
+        raise ToolError(
+            "live fetch disabled (set OSINT_LIVE=1). Guard/gate/audit ran; IP pinned in the audit log."
+        )
     from .egress import fetch_pinned
 
     # MF2: audit the live egress ATTEMPT before the socket opens — a real fetch that dies at the socket/TLS
@@ -183,7 +195,9 @@ def fetch(
     except EgressError as e:
         audit.record("fetch", {"host": host}, ip, "blocked (fetch guard)")  # fixed reason code
         print(f"[osint-toolkit] fetch guard block: {e!r}", file=sys.stderr)
-        raise ToolError("egress guard blocked during fetch (host/IP recorded in the audit log only)") from e
+        raise ToolError(
+            "egress guard blocked during fetch (host/IP recorded in the audit log only)"
+        ) from e
     except (OSError, ssl.SSLError, http.client.HTTPException) as e:
         # MF2: fetch_pinned raises plain socket/TLS/HTTP errors (TimeoutError, ConnectionRefusedError,
         # ssl.SSLError, http.client.HTTPException) that are NOT EgressError. Without this they escape uncaught
@@ -191,12 +205,18 @@ def fetch(
         # detail-free ToolError, never leak the raw exception.
         audit.record("fetch", {"host": host}, ip, "error (network/TLS)")
         print(f"[osint-toolkit] fetch network/TLS error: {e!r}", file=sys.stderr)
-        raise ToolError("fetch failed at the network/TLS layer (details in the server log only)") from e
+        raise ToolError(
+            "fetch failed at the network/TLS layer (details in the server log only)"
+        ) from e
     tok = artifacts.put(body)
     audit.record("fetch", {"host": host}, ip, "ok")
     _session_urls.add(final_url)
     return FetchedArtifact(
-        artifact_ref=tok, host=host, content_type=ctype, sha256=artifacts.compute_hash(tok), size=len(body)
+        artifact_ref=tok,
+        host=host,
+        content_type=ctype,
+        sha256=artifacts.compute_hash(tok),
+        size=len(body),
     )
 
 
@@ -221,13 +241,17 @@ def extract_exif(artifact_ref: Annotated[str, Field(max_length=_MAX_ID)]) -> Exi
         raise ToolError(str(e)) from e
     if detected is None or not detected.startswith("image/"):
         return ExifData(
-            artifact_ref=artifact_ref, detected_type=detected, fields={},
+            artifact_ref=artifact_ref,
+            detected_type=detected,
+            fields={},
             note=f"artifact is not a recognized image ({detected}); EXIF not extracted",
         )
     from .exif import parse_exif
 
     fields = parse_exif(data)  # memory-safe, resource-limited; empty on any parser error
-    note = "candidate; verify the location/fields before use — a planted artifact can carry false EXIF"
+    note = (
+        "candidate; verify the location/fields before use — a planted artifact can carry false EXIF"
+    )
     return ExifData(artifact_ref=artifact_ref, detected_type=detected, fields=fields, note=note)
 
 
@@ -248,7 +272,9 @@ def reverse_image_search(
     — the call runs the guard/audit then fails closed with a ToolError (review S19)."""
     # control #7c/#10: refusing the upload is an egress-relevant event — audit it before raising.
     _require_confirmed_or_audit(
-        "reverse_image_search", confirmed, {"connector": connector},
+        "reverse_image_search",
+        confirmed,
+        {"connector": connector},
         "reverse_image_search uploads an image to a third party; pass confirmed=True",
     )
     try:
@@ -281,7 +307,9 @@ def get_map_tile(
     NOTE: no live connector is configured in this deployment — the call fails closed with a ToolError (S19)."""
     # control #7c/#10: refusing the coordinate disclosure is an egress-relevant event — audit it before raising.
     _require_confirmed_or_audit(
-        "get_map_tile", confirmed, {"connector": connector, "zoom": zoom},
+        "get_map_tile",
+        confirmed,
+        {"connector": connector, "zoom": zoom},
         "get_map_tile discloses coordinates to a third-party tile provider; pass confirmed=True",
     )
     audit.record("get_map_tile", {"connector": connector, "zoom": zoom}, "-", "attempt")
@@ -327,27 +355,41 @@ async def propose_to_ledger(
             res = await c.call_tool(
                 "add_evidence",
                 {
-                    "case_id": case_id, "item": item, "source_id": source_id,
-                    "evidence_type": "report", "pii": pii, "source_channel": "ingested",
+                    "case_id": case_id,
+                    "item": item,
+                    "source_id": source_id,
+                    "evidence_type": "report",
+                    "pii": pii,
+                    "source_channel": "ingested",
                 },
             )
     except ToolError:
         raise  # a business-rule rejection from evidence-ledger (e.g. size cap) — surface it verbatim
-    except Exception as e:  # noqa: BLE001 - surfaced as a clear tool error, never a raw internal leak
+    except (
+        Exception
+    ) as e:  # broad by design — surfaced as a clear tool error, never a raw internal leak
         # S1: do not re-embed raw str(e) (transport/URL/host detail) into a client-visible ToolError — that
         # bypasses the mask_error_details invariant. Log the detail to stderr; return a fixed reason code.
         print(f"[osint-toolkit] evidence-ledger proposal transport error: {e!r}", file=sys.stderr)
-        raise ToolError("evidence-ledger proposal failed (transport error; details in the server log only)") from e
+        raise ToolError(
+            "evidence-ledger proposal failed (transport error; details in the server log only)"
+        ) from e
     # S2/MF2: the ledger response may lack structured content, or `res.data` may be a plain dict (when this
     # client holds no pydantic model for the callee's output schema) or a shape-drifted object. A bare
     # `res.data.evidence_id` deref would raise AttributeError, masked to an opaque error that makes every
     # ledger write look broken. Normalize dict-or-model and fail with a clear ToolError if the id is absent.
     data = res.data
     if data is None:
-        raise ToolError("evidence-ledger returned an unexpected response shape (no structured content)")
-    evidence_id = data.get("evidence_id") if isinstance(data, dict) else getattr(data, "evidence_id", None)
+        raise ToolError(
+            "evidence-ledger returned an unexpected response shape (no structured content)"
+        )
+    evidence_id = (
+        data.get("evidence_id") if isinstance(data, dict) else getattr(data, "evidence_id", None)
+    )
     if not evidence_id:
-        raise ToolError("evidence-ledger returned an unexpected response shape (missing evidence_id)")
+        raise ToolError(
+            "evidence-ledger returned an unexpected response shape (missing evidence_id)"
+        )
     return ProposalRef(evidence_id=evidence_id, case_id=case_id)
 
 
@@ -377,11 +419,14 @@ def _ledger_url_is_local(url: str) -> bool:
 def main() -> None:
     st = audit.verify_chain()
     if not st.ok:
-        print(f"[osint-toolkit] REFUSING TO SERVE — egress audit chain failed: {st.mismatch}", file=sys.stderr)
+        print(
+            f"[osint-toolkit] REFUSING TO SERVE — egress audit chain failed: {st.mismatch}",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     # S8: propose_to_ledger's route to EVIDENCE_LEDGER_URL is UNSCREENED + UNAUDITED. Fail closed if it is not
     # a loopback target, unless the operator explicitly opts in to a remote ledger.
-    if EVIDENCE_LEDGER_URL and not _ledger_url_is_local(EVIDENCE_LEDGER_URL):
+    if EVIDENCE_LEDGER_URL and not _ledger_url_is_local(EVIDENCE_LEDGER_URL):  # noqa: SIM102 - kept nested: outer = remote ledger configured, inner = not opted in
         if os.environ.get("OSINT_LEDGER_ALLOW_REMOTE") != "1":
             print(
                 "[osint-toolkit] REFUSING TO SERVE — EVIDENCE_LEDGER_URL is not a loopback target; "
@@ -406,7 +451,10 @@ def main() -> None:
             file=sys.stderr,
         )
     live = "LIVE egress ON" if OSINT_LIVE else "live egress OFF (guard/gate/audit only)"
-    print(f"[osint-toolkit] audit chain OK ({st.rows_verified} rows); {live}; serving on stdio", file=sys.stderr)
+    print(
+        f"[osint-toolkit] audit chain OK ({st.rows_verified} rows); {live}; serving on stdio",
+        file=sys.stderr,
+    )
     mcp.run()
 
 

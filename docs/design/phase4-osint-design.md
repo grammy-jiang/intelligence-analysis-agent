@@ -5,7 +5,9 @@
 > this design. No connector code is written until the security panel reaches must-fix=0.
 
 ## Review response (v2) — the mandatory security gate returned must-fix; all folded in
+
 The blocking panel (mcp-security + application-security) blocked v1. Resolutions:
+
 - **Finding B — collect-then-grade hole in *shipped* ach-engine — FIXED IN CODE.** `score_matrix` now refuses
   any cell whose evidence lacks an effective `analyst_confirmed` grade, via a shared `grade_signals`
   cross-server signal (same narrow, write-scoped pattern as staleness) + a regression test. An ingested/ungraded
@@ -17,6 +19,7 @@ The blocking panel (mcp-security + application-security) blocked v1. Resolutions
   additions, not a redesign.
 
 ## Gate 1 — deployment context: RESOLVED = unclassified / OSINT-only
+
 Public open-source data only; **egress-allowed** to allowlisted OSINT sources; **no classified/compartmented
 handling** and no classified data at rest. The no-egress / confidential class stays deferred (consistent with
 the tech-stack decision). This resolves blueprint open decision #1 and is what makes live collection
@@ -24,13 +27,45 @@ permissible at all. Everything below assumes this context; a classified deployme
 design.
 
 ## Components (blueprint Layer 4)
+
 - **`osint-toolkit` MCP** — collection primitives; the **sole** external-egress surface.
 - **`osint-investigation` skill** — the *method* (when/why/how to search + verify); no toolkit mechanics in prose.
 - **`deception-detection-reviewer` subagent** — read-only D&D critic over the evidence chain (Masterman/Jervis);
   buildable now that evidence-ledger exists. Its distillation is a factory task (map Masterman + Jervis D&D
   principles), out of scope for this doc except as a consumer of raw case state.
 
+## Data-flow — sole egress + collect-then-grade
+
+`osint-toolkit` is the only server with a route to the network; the two data servers run OS-sandboxed with no
+socket. Every fetched item enters the ledger as an **ungraded, `ingested` proposal** and cannot reach a scored
+matrix until a human grades it `analyst_confirmed` (finding B, closed in code):
+
+```mermaid
+flowchart LR
+    Analyst["Analyst"]
+    subgraph Sandbox["Data servers — OS-sandboxed, zero network"]
+        EV["evidence-ledger"]
+        ACH["ach-engine"]
+    end
+    subgraph OT["osint-toolkit — the SOLE egress surface"]
+        Screen["pre-egress screen<br/>exfil identifiers"]
+        Guard["SSRF guard<br/>scheme + IANA block + pinned IP"]
+        Audit["append-only egress audit"]
+    end
+    Web(["Allowlisted OSINT sources"])
+
+    Analyst -->|"search / fetch — OSINT_LIVE"| Screen
+    Screen --> Guard
+    Guard --> Web
+    Guard --> Audit
+    Web -->|raw bytes + hash| OT
+    OT -->|"propose_to_ledger — ungraded, ingested"| EV
+    Analyst -->|"grade_evidence — analyst_confirmed"| EV
+    EV -->|score_matrix refuses ungraded cells| ACH
+```
+
 ## `osint-toolkit` MCP — primitives only (FastMCP, same stack as Phase 3)
+
 The toolkit **fetches/stores raw and proposes**; it never grades, never asserts a fact, never writes a trusted
 record. Every result is a **candidate** for analyst confirmation (decision #10).
 
@@ -78,10 +113,12 @@ def propose_to_ledger(case_id: str, artifact_ref: str, note: str) -> ProposalRef
     instructions from the fetched page): it is never scored, is length-capped, and is surfaced to the analyst as
     an unverified system-generated annotation (control #7/H)."""
 ```
+
 Read-back (`get_artifact`, `list_artifacts`) + `verify_chain` per the Phase-3 conventions. `Connector` is a
 `Literal[...]` allowlist. Geolocation *verification* is a workflow (the skill), never a tool output.
 
 ## SECURITY CONTROLS (the load-bearing section — all ship together, design-spec §65)
+
 1. **Sole egress — with a named enforcement mechanism (C).** osint-toolkit is the ONLY server with network
    access. The three data servers run in an **OS-level network sandbox with no route to the network** (a
    network namespace / `--network=none` / a seccomp profile denying `socket(AF_INET/AF_INET6)`), AND a **CI
@@ -149,6 +186,7 @@ Read-back (`get_artifact`, `list_artifacts`) + `verify_chain` per the Phase-3 co
    fully-qualified hostnames (no wildcard domains); its client library is CVE-scanned in CI.
 
 ## Grounding vs plumbing (the rule)
+
 - **Grounded:** the collect-then-grade separation (decision #8, FM/Masterman — the subject controls the
   footprint, so a self-grading collector launders injected directives); candidate-only verification (decision
   #10); egress-isolation of the trifecta (decision #9); D&D interrogation (Masterman C002/C044, Jervis).
@@ -156,6 +194,7 @@ Read-back (`get_artifact`, `list_artifacts`) + `verify_chain` per the Phase-3 co
   circuit-breaker/quota bookkeeping, the deterministic high-risk hook's implementation.
 
 ## Test plan (design-spec §72–75) — a regression test per must-fix
+
 - osint-toolkit connectors evaluate against **REAL services**, not mocks — behind a `--live` opt-in; CI runs the
   non-egress parts deterministically.
 - **SSRF matrix (G):** each blocked class (private/loopback/link-local/metadata, 0.0.0.0/8, 100.64/10,
@@ -176,6 +215,7 @@ Read-back (`get_artifact`, `list_artifacts`) + `verify_chain` per the Phase-3 co
 - Whole-agent eval at the phase gate.
 
 ## Open questions for the SECURITY REVIEW panel
+
 1. Is process-level egress isolation (only osint-toolkit has a network namespace/sockets) the right enforcement
    for control #1, or is that over/under-scoped for a repo-local MVP?
 2. Is the SSRF re-validation (post-DNS + per-redirect, pinned IP) sufficient against rebinding, or is a

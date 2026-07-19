@@ -10,14 +10,19 @@ import os
 
 os.environ["CALIBRATION_DB"] = ":memory:"
 
-from fastmcp import Client  # noqa: E402
-from fastmcp.exceptions import ToolError  # noqa: E402
+from fastmcp import Client
+from fastmcp.exceptions import ToolError
 
-from mcp_servers.calibration_tracker.server import mcp  # noqa: E402
+from mcp_servers.calibration_tracker.server import mcp
 
 EXPECTED_TOOLS = {
-    "log_forecast", "resolve_forecast", "void_forecast", "get_forecast",
-    "list_forecasts", "get_calibration_report", "verify_chain",
+    "log_forecast",
+    "resolve_forecast",
+    "void_forecast",
+    "get_forecast",
+    "list_forecasts",
+    "get_calibration_report",
+    "verify_chain",
 }
 
 
@@ -25,7 +30,7 @@ async def _run() -> None:
     async with Client(mcp) as client:
         tools = await client.list_tools()
         names = {t.name for t in tools}
-        assert EXPECTED_TOOLS <= names, f"missing tools: {EXPECTED_TOOLS - names}"
+        assert names >= EXPECTED_TOOLS, f"missing tools: {EXPECTED_TOOLS - names}"
         # every tool exposes an input schema (FastMCP derives it from the typed signature)
         for t in tools:
             assert t.inputSchema and t.inputSchema.get("type") == "object"
@@ -34,8 +39,11 @@ async def _run() -> None:
         res = await client.call_tool(
             "log_forecast",
             {
-                "case_id": "w", "question": "q", "probability": 0.5,
-                "resolution_criteria": "resolves yes/no", "horizon": "3mo",
+                "case_id": "w",
+                "question": "q",
+                "probability": 0.5,
+                "resolution_criteria": "resolves yes/no",
+                "horizon": "3mo",
                 "judgment_source": "analyst_confirmed",
             },
         )
@@ -48,8 +56,11 @@ async def _run() -> None:
             await client.call_tool(
                 "log_forecast",
                 {
-                    "case_id": "w", "question": "q2", "probability": 0.5,
-                    "resolution_criteria": "def", "horizon": "3mo",
+                    "case_id": "w",
+                    "question": "q2",
+                    "probability": 0.5,
+                    "resolution_criteria": "def",
+                    "horizon": "3mo",
                     "judgment_source": "model_draft",
                 },
             )

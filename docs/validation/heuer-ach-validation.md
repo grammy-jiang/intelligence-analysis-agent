@@ -5,11 +5,14 @@
 > subagents.
 
 ## What we are proving
+
 That the *agent-assisted* pass beats an *unaided baseline* on the two things the method exists to buy:
+
 - **(a) a broader, better-disconfirmed hypothesis set** — not a single favoured storyline.
 - **(b) independent critique that catches injected bias / assumption / overconfidence flaws** the baseline misses.
 
 ## Test items
+
 1. **Primary — a Heuer ACH worked example.** Use the canonical Analysis-of-Competing-Hypotheses case from
    *Psychology of Intelligence Analysis* Ch. 8 (the Iraqi-retaliation question following the 1993 strike on
    the Iraqi intelligence HQ): **"Will Iraq retaliate (and how) for the US action?"** Heuer walks the same
@@ -18,6 +21,7 @@ That the *agent-assisted* pass beats an *unaided baseline* on the two things the
    attack warning question). Used only to confirm the method generalizes beyond the reference example.
 
 ## Procedure
+
 For the primary item, produce three runs:
 
 - **Control / baseline (unaided):** ask the question once, in a single pass, with no ACH matrix and no
@@ -37,6 +41,7 @@ For the primary item, produce three runs:
 ## Pass bar (both must hold on the primary item)
 
 **(a) Hypothesis set + disconfirmation.** PASS if ALL of:
+
 - the agent-assisted hypothesis set is a **superset** of the baseline's, and includes **≥ 1 substantive
   hypothesis the baseline omitted** (not a trivial reword);
 - every hypothesis is mutually exclusive and marked `candidate/unproven/disproved` (none pre-marked
@@ -46,6 +51,7 @@ For the primary item, produce three runs:
   disconfirming item (not promoted by confirming ones).
 
 **(b) Flaw catch.** PASS if for **all three** injected flaws:
+
 - the correct reviewer **names the specific flaw** (not a generic caution) and gives a correction, AND
 - the unaided baseline run did **not** surface that flaw.
 
@@ -54,5 +60,6 @@ verdict in `docs/validation/results-<date>.md`. A miss on (a) points at the SAT 
 at a reviewer.
 
 ## Out of scope for this gate
+
 Brier scoring against the real outcome (needs the resolved outcome + a calibration tracker — Phase 3); live
 OSINT collection and deception review (Phase 4). This gate tests the **prose analysis core only**.

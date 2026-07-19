@@ -26,8 +26,8 @@ from .models import (
     Matrix,
     MatrixList,
     MatrixRef,
-    RankItem,
     Ranking,
+    RankItem,
     Strength,
 )
 
@@ -104,7 +104,12 @@ class ACHStore:
         # can rewrite-and-rehash the chain. Best-effort: a managed FS may forbid chmod.
         if self.db_path == ":memory:":
             return
-        for path in (self.db_path, self.db_path + "-wal", self.db_path + "-shm", self.manifest_path):
+        for path in (
+            self.db_path,
+            self.db_path + "-wal",
+            self.db_path + "-shm",
+            self.manifest_path,
+        ):
             if path and os.path.exists(path):
                 try:
                     os.chmod(path, 0o600)
@@ -139,9 +144,13 @@ class ACHStore:
 
     # ---- matrix / hypotheses ----------------------------------------------
     def create_matrix(self, case_id: str, hypotheses: list[str]) -> MatrixRef:
-        if not case_id or not case_id.strip():  # SF9: a blank case_id groups matrices outside any real case
+        if (
+            not case_id or not case_id.strip()
+        ):  # SF9: a blank case_id groups matrices outside any real case
             raise ACHError("create_matrix requires a non-empty case_id.")
-        if len(case_id) > _MAX_ID:  # S5: store-layer length cap (defense-in-depth), mirrors rate_cell's evidence_id
+        if (
+            len(case_id) > _MAX_ID
+        ):  # S5: store-layer length cap (defense-in-depth), mirrors rate_cell's evidence_id
             raise ACHError(f"case_id exceeds max length {_MAX_ID}.")
         if not hypotheses:
             raise ACHError("create_matrix requires a non-empty hypothesis set.")
@@ -173,7 +182,9 @@ class ACHStore:
         """Insert one hypothesis row (no commit / no manifest — the caller owns the transaction)."""
         if not text or not text.strip():  # S3: reject empty/whitespace hypothesis text
             raise ACHError("hypothesis text must be non-empty.")
-        if len(text) > _MAX_TEXT:  # S5: bound every string that lands in the append-only chain (DoS)
+        if (
+            len(text) > _MAX_TEXT
+        ):  # S5: bound every string that lands in the append-only chain (DoS)
             raise ACHError(f"hypothesis text exceeds max length {_MAX_TEXT}.")
         hid = "h_" + uuid.uuid4().hex[:12]
         added_at = now_iso()
@@ -203,16 +214,21 @@ class ACHStore:
 
     def _hypotheses(self, matrix_id: str) -> list[HypothesisItem]:
         rows = self._conn.execute(
-            "SELECT hypothesis_id, text FROM hypotheses WHERE matrix_id=? ORDER BY seq ASC", (matrix_id,)
+            "SELECT hypothesis_id, text FROM hypotheses WHERE matrix_id=? ORDER BY seq ASC",
+            (matrix_id,),
         ).fetchall()
         return [HypothesisItem(hypothesis_id=r["hypothesis_id"], text=r["text"]) for r in rows]
 
     def get_matrix_ref(self, matrix_id: str) -> MatrixRef:
         r = self._matrix_row(matrix_id)
-        return MatrixRef(matrix_id=matrix_id, case_id=r["case_id"], hypotheses=self._hypotheses(matrix_id))
+        return MatrixRef(
+            matrix_id=matrix_id, case_id=r["case_id"], hypotheses=self._hypotheses(matrix_id)
+        )
 
     # ---- cells -------------------------------------------------------------
-    def _effective_cell(self, matrix_id: str, evidence_id: str, hypothesis_id: str) -> sqlite3.Row | None:
+    def _effective_cell(
+        self, matrix_id: str, evidence_id: str, hypothesis_id: str
+    ) -> sqlite3.Row | None:
         return self._conn.execute(
             "SELECT * FROM cells WHERE matrix_id=? AND evidence_id=? AND hypothesis_id=? ORDER BY seq DESC "
             "LIMIT 1",
@@ -243,10 +259,13 @@ class ACHStore:
         if strength not in _STRENGTH:
             raise ACHError(f"strength must be one of {_STRENGTH}, got {strength!r}.")
         if judgment_source not in _JUDGMENT_SOURCE:
-            raise ACHError(f"judgment_source must be one of {_JUDGMENT_SOURCE}, got {judgment_source!r}.")
+            raise ACHError(
+                f"judgment_source must be one of {_JUDGMENT_SOURCE}, got {judgment_source!r}."
+            )
         self._matrix_row(matrix_id)
         hyp = self._conn.execute(
-            "SELECT 1 FROM hypotheses WHERE hypothesis_id=? AND matrix_id=?", (hypothesis_id, matrix_id)
+            "SELECT 1 FROM hypotheses WHERE hypothesis_id=? AND matrix_id=?",
+            (hypothesis_id, matrix_id),
         ).fetchone()
         if not hyp:
             raise ACHError(f"unknown hypothesis_id for this matrix: {hypothesis_id}")
@@ -275,9 +294,15 @@ class ACHStore:
         # M1: rated_ts is in the hashed payload — it drives _cell_stale and the score_matrix staleness
         # blocker, so a raw UPDATE of it must break verify_chain, not sail through with ok=True.
         payload = {
-            "matrix_id": matrix_id, "evidence_id": evidence_id, "hypothesis_id": hypothesis_id,
-            "consistency": consistency, "strength": strength, "analyst_id": self.analyst_id,
-            "judgment_source": judgment_source, "reason": reason, "rated_at": rated_at,
+            "matrix_id": matrix_id,
+            "evidence_id": evidence_id,
+            "hypothesis_id": hypothesis_id,
+            "consistency": consistency,
+            "strength": strength,
+            "analyst_id": self.analyst_id,
+            "judgment_source": judgment_source,
+            "reason": reason,
+            "rated_at": rated_at,
             "rated_ts": rated_ts,
         }
         with self._write_lock:
@@ -299,18 +324,34 @@ class ACHStore:
                     "judgment_source, reason, rated_at, rated_ts, prev_hash, row_hash) "
                     "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        matrix_id, evidence_id, hypothesis_id, consistency, strength, self.analyst_id,
-                        judgment_source, reason, rated_at, rated_ts, prev, rh,
+                        matrix_id,
+                        evidence_id,
+                        hypothesis_id,
+                        consistency,
+                        strength,
+                        self.analyst_id,
+                        judgment_source,
+                        reason,
+                        rated_at,
+                        rated_ts,
+                        prev,
+                        rh,
                     ),
                 )
             self._manifest.append("cells", rh)  # after commit
         return CellRecord(
-            matrix_id=matrix_id, evidence_id=evidence_id, hypothesis_id=hypothesis_id,
+            matrix_id=matrix_id,
+            evidence_id=evidence_id,
+            hypothesis_id=hypothesis_id,
             # domains are enforced above (raise on out-of-domain), so these casts are sound, not blind.
-            consistency=cast(Consistency, consistency), strength=cast(Strength, strength),
-            judgment_source=cast(JudgmentSource, judgment_source), reason=reason, rated_at=rated_at,
+            consistency=cast(Consistency, consistency),
+            strength=cast(Strength, strength),
+            judgment_source=cast(JudgmentSource, judgment_source),
+            reason=reason,
+            rated_at=rated_at,
             # M5: report the truth — a rating that supersedes a prior effective cell is a correction.
-            superseded=superseded, row_hash=rh,
+            superseded=superseded,
+            row_hash=rh,
         )
 
     def _effective_cells(self, matrix_id: str) -> list[sqlite3.Row]:
@@ -333,13 +374,24 @@ class ACHStore:
             stale = self._cell_stale(c)  # best-effort; score_matrix is authoritative
             cells.append(
                 Cell(
-                    evidence_id=c["evidence_id"], hypothesis_id=c["hypothesis_id"], consistency=c["consistency"],
-                    strength=c["strength"], judgment_source=c["judgment_source"], stale=stale,
-                    stale_reason=(self.staleness.changed_field(c["evidence_id"]) if stale else None),
+                    evidence_id=c["evidence_id"],
+                    hypothesis_id=c["hypothesis_id"],
+                    consistency=c["consistency"],
+                    strength=c["strength"],
+                    judgment_source=c["judgment_source"],
+                    stale=stale,
+                    stale_reason=(
+                        self.staleness.changed_field(c["evidence_id"]) if stale else None
+                    ),
                     rated_at=c["rated_at"],
                 )
             )
-        return Matrix(matrix_id=matrix_id, case_id=r["case_id"], hypotheses=self._hypotheses(matrix_id), cells=cells)
+        return Matrix(
+            matrix_id=matrix_id,
+            case_id=r["case_id"],
+            hypotheses=self._hypotheses(matrix_id),
+            cells=cells,
+        )
 
     def score_matrix(self, matrix_id: str) -> Ranking:
         self._matrix_row(matrix_id)
@@ -382,9 +434,13 @@ class ACHStore:
                     f"({c['evidence_id']}, {c['hypothesis_id']}) evidence not analyst_confirmed-graded: {detail}"
                 )
             elif self._cell_stale(c):
-                blockers.append(f"({c['evidence_id']}, {c['hypothesis_id']}) stale: re-rate after grade change")
+                blockers.append(
+                    f"({c['evidence_id']}, {c['hypothesis_id']}) stale: re-rate after grade change"
+                )
             elif c["judgment_source"] == "model_draft":
-                blockers.append(f"({c['evidence_id']}, {c['hypothesis_id']}) model_draft: confirm before scoring")
+                blockers.append(
+                    f"({c['evidence_id']}, {c['hypothesis_id']}) model_draft: confirm before scoring"
+                )
         if blockers:
             raise ACHError("cannot score — resolve these cells first: " + "; ".join(blockers))
 
@@ -401,14 +457,22 @@ class ACHStore:
         # non-diagnostic: evidence with no 'I' against any hypothesis (consistent/NA with all → no discrimination)
         non_diagnostic = [ev for ev, cs in by_evidence.items() if "I" not in cs]
         ordered = sorted(
-            (RankItem(hypothesis_id=h.hypothesis_id, strong_inconsistencies=strong[h.hypothesis_id],
-                      weak_inconsistencies=weak[h.hypothesis_id]) for h in hyps),
+            (
+                RankItem(
+                    hypothesis_id=h.hypothesis_id,
+                    strong_inconsistencies=strong[h.hypothesis_id],
+                    weak_inconsistencies=weak[h.hypothesis_id],
+                )
+                for h in hyps
+            ),
             key=lambda ri: (ri.strong_inconsistencies, ri.weak_inconsistencies),
         )
         leading = ordered[0].hypothesis_id if ordered else None
         return Ranking(ordered=ordered, non_diagnostic=non_diagnostic, leading=leading)
 
-    def list_matrices(self, case_id: str, limit: int = 100, cursor: str | None = None) -> MatrixList:
+    def list_matrices(
+        self, case_id: str, limit: int = 100, cursor: str | None = None
+    ) -> MatrixList:
         limit = max(1, min(limit, 1000))
         try:  # S1: a malformed cursor is a caller error (ACHError), not an uncaught ValueError
             after = int(cursor) if cursor else 0
@@ -446,10 +510,16 @@ class ACHStore:
                     expected = row_hash(prev, payload)
                     if expected != r["row_hash"] or r["prev_hash"] != prev:
                         return ChainStatus(
-                            server="ach-engine", scope="all", ok=False, head_hash=heads,
+                            server="ach-engine",
+                            scope="all",
+                            ok=False,
+                            head_hash=heads,
                             rows_verified=verified,
                             mismatch=ChainMismatch(
-                                table=table, row_id=str(r["seq"]), expected_hash=expected, got_hash=r["row_hash"]
+                                table=table,
+                                row_id=str(r["seq"]),
+                                expected_hash=expected,
+                                got_hash=r["row_hash"],
                             ),
                         )
                     prev = r["row_hash"]
@@ -463,9 +533,16 @@ class ACHStore:
             ok, mm = self._manifest.check(heads, counts)
             if not ok and mm is not None:
                 return ChainStatus(
-                    server="ach-engine", scope="all", ok=False, head_hash=heads, rows_verified=verified,
+                    server="ach-engine",
+                    scope="all",
+                    ok=False,
+                    head_hash=heads,
+                    rows_verified=verified,
                     mismatch=ChainMismatch(
-                        table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                        table=mm.table,
+                        row_id=mm.row_id,
+                        expected_hash=mm.expected_hash,
+                        got_hash=mm.got_hash,
                     ),
                 )
             return ChainStatus(
@@ -477,12 +554,22 @@ class ACHStore:
             return {"matrix_id": r["matrix_id"], "case_id": r["case_id"]}
         if table == "hypotheses":
             return {
-                "hypothesis_id": r["hypothesis_id"], "matrix_id": r["matrix_id"], "text": r["text"],
+                "hypothesis_id": r["hypothesis_id"],
+                "matrix_id": r["matrix_id"],
+                "text": r["text"],
                 "added_at": r["added_at"],
             }
         return {
-            "matrix_id": r["matrix_id"], "evidence_id": r["evidence_id"], "hypothesis_id": r["hypothesis_id"],
-            "consistency": r["consistency"], "strength": r["strength"], "analyst_id": r["analyst_id"],
-            "judgment_source": r["judgment_source"], "reason": r["reason"], "rated_at": r["rated_at"],
-            "rated_ts": r["rated_ts"],  # M1: rated_ts feeds staleness logic, so it must be in the hash
+            "matrix_id": r["matrix_id"],
+            "evidence_id": r["evidence_id"],
+            "hypothesis_id": r["hypothesis_id"],
+            "consistency": r["consistency"],
+            "strength": r["strength"],
+            "analyst_id": r["analyst_id"],
+            "judgment_source": r["judgment_source"],
+            "reason": r["reason"],
+            "rated_at": r["rated_at"],
+            "rated_ts": r[
+                "rated_ts"
+            ],  # M1: rated_ts feeds staleness logic, so it must be in the hash
         }

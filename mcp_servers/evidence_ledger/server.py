@@ -116,7 +116,9 @@ def add_evidence(
             if len(k) > _MAX_ID:
                 raise ToolError(f"an expected_observables key exceeds max length {_MAX_ID}.")
             if len(v) > _MAX_OBSERVABLE_VAL:
-                raise ToolError(f"an expected_observables value exceeds max length {_MAX_OBSERVABLE_VAL}.")
+                raise ToolError(
+                    f"an expected_observables value exceeds max length {_MAX_OBSERVABLE_VAL}."
+                )
     try:
         return store.add_evidence(
             case_id, item, source_id, evidence_type, pii, source_channel, expected_observables
@@ -147,7 +149,9 @@ def grade_evidence(
     A `model_draft` grade will therefore block scoring — re-grade via update_grade(..., analyst_confirmed)
     once a human has confirmed it."""
     try:
-        return store.grade_evidence(evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale)
+        return store.grade_evidence(
+            evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale
+        )
     except EvidenceError as e:
         raise ToolError(str(e)) from e
 
@@ -241,9 +245,15 @@ def verify_signals_chain() -> ChainStatus:
 
 
 def main() -> None:
-    for label, st in (("evidence-ledger", store.verify_chain()), ("evidence-signals", staleness.verify_chain())):
+    for label, st in (
+        ("evidence-ledger", store.verify_chain()),
+        ("evidence-signals", staleness.verify_chain()),
+    ):
         if not st.ok:
-            print(f"[evidence-ledger] REFUSING TO SERVE — {label} chain failed: {st.mismatch}", file=sys.stderr)
+            print(
+                f"[evidence-ledger] REFUSING TO SERVE — {label} chain failed: {st.mismatch}",
+                file=sys.stderr,
+            )
             raise SystemExit(1)
     print("[evidence-ledger] chains OK; serving on stdio", file=sys.stderr)
     # show_banner=False: the default FastMCP banner performs a "newer version" HTTP check — suppressed to

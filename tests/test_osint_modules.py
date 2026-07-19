@@ -39,15 +39,30 @@ def test_audit_allowlist_and_chain(tmp_path):
     a = EgressAudit(str(tmp_path / "audit.db"))
     try:
         # `query` is deliberately not loggable for search; connector is. Pass both; only connector persists.
-        a.record("search", {"connector": "web", "query": "SENSITIVE case id", "max_results": 20}, "-", "attempt")
-        a.record("fetch", {"host": "example.com", "url": "https://example.com/secret?key=abc"}, "1.2.3.4", "ok")
+        a.record(
+            "search",
+            {"connector": "web", "query": "SENSITIVE case id", "max_results": 20},
+            "-",
+            "attempt",
+        )
+        a.record(
+            "fetch",
+            {"host": "example.com", "url": "https://example.com/secret?key=abc"},
+            "1.2.3.4",
+            "ok",
+        )
         assert a.count() == 2
         assert a.verify_chain().ok is True
         # confirm the secret-bearing fields never hit the row
         raw = sqlite3.connect(str(tmp_path / "audit.db"))
         rows = "".join(r[0] for r in raw.execute("SELECT fields FROM egress_log"))
         raw.close()
-        assert "SENSITIVE" not in rows and "secret?key" not in rows and "query" not in rows and "url" not in rows
+        assert (
+            "SENSITIVE" not in rows
+            and "secret?key" not in rows
+            and "query" not in rows
+            and "url" not in rows
+        )
     finally:
         a.close()
 
@@ -111,7 +126,9 @@ def test_audit_manifest_middle_line_edit_detected(tmp_path):
         with open(mp, encoding="utf-8") as fh:
             lines = [ln for ln in fh.read().splitlines() if ln.strip()]
         assert len(lines) >= 3  # a genuine middle line exists
-        e = json.loads(lines[1])  # a MIDDLE line — neither the tail head nor the total count changes
+        e = json.loads(
+            lines[1]
+        )  # a MIDDLE line — neither the tail head nor the total count changes
         e["head"] = "0" * 64
         lines[1] = json.dumps(e)
         with open(mp, "w", encoding="utf-8") as fh:

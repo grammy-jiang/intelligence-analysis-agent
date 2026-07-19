@@ -47,7 +47,9 @@ class EgressAudit:
         self._conn.close()
 
     def _head(self) -> str:
-        r = self._conn.execute("SELECT row_hash FROM egress_log ORDER BY seq DESC LIMIT 1").fetchone()
+        r = self._conn.execute(
+            "SELECT row_hash FROM egress_log ORDER BY seq DESC LIMIT 1"
+        ).fetchone()
         return r["row_hash"] if r else GENESIS
 
     def seed_manifest_baseline(self) -> int:
@@ -60,17 +62,32 @@ class EgressAudit:
         allow = LOGGABLE_FIELDS.get(tool, ())
         logged = {k: fields[k] for k in allow if k in fields}  # fail-closed allowlist
         with self._lock:  # S15: whole head-read -> INSERT -> commit is atomic vs other writers
-            payload = {"tool": tool, "fields": logged, "resolved_ip": resolved_ip, "outcome": outcome,
-                       "at": now_iso()}
+            payload = {
+                "tool": tool,
+                "fields": logged,
+                "resolved_ip": resolved_ip,
+                "outcome": outcome,
+                "at": now_iso(),
+            }
             prev = self._head()
             rh = row_hash(prev, payload)
             self._conn.execute(
                 "INSERT INTO egress_log(tool, fields, resolved_ip, outcome, at, prev_hash, row_hash) "
                 "VALUES(?,?,?,?,?,?,?)",
-                (tool, json.dumps(logged, sort_keys=True), resolved_ip, outcome, payload["at"], prev, rh),
+                (
+                    tool,
+                    json.dumps(logged, sort_keys=True),
+                    resolved_ip,
+                    outcome,
+                    payload["at"],
+                    prev,
+                    rh,
+                ),
             )
             self._conn.commit()
-            self._manifest.append("egress_log", rh)  # MF3: attest the new head AFTER the row durably commits
+            self._manifest.append(
+                "egress_log", rh
+            )  # MF3: attest the new head AFTER the row durably commits
 
     def verify_chain(self) -> ChainStatus:
         # lock: hold self._lock for the whole read + manifest walk. Every writer (record) holds self._lock
@@ -81,15 +98,27 @@ class EgressAudit:
             prev = GENESIS
             verified = 0
             for r in self._conn.execute("SELECT * FROM egress_log ORDER BY seq ASC").fetchall():
-                payload = {"tool": r["tool"], "fields": json.loads(r["fields"]), "resolved_ip": r["resolved_ip"],
-                           "outcome": r["outcome"], "at": r["at"]}
+                payload = {
+                    "tool": r["tool"],
+                    "fields": json.loads(r["fields"]),
+                    "resolved_ip": r["resolved_ip"],
+                    "outcome": r["outcome"],
+                    "at": r["at"],
+                }
                 expected = row_hash(prev, payload)
                 if expected != r["row_hash"] or r["prev_hash"] != prev:
                     return ChainStatus(
-                        server="osint-egress-audit", scope="all", ok=False, head_hash={"egress_log": prev},
+                        server="osint-egress-audit",
+                        scope="all",
+                        ok=False,
+                        head_hash={"egress_log": prev},
                         rows_verified=verified,
-                        mismatch=ChainMismatch(table="egress_log", row_id=str(r["seq"]), expected_hash=expected,
-                                               got_hash=r["row_hash"]),
+                        mismatch=ChainMismatch(
+                            table="egress_log",
+                            row_id=str(r["seq"]),
+                            expected_hash=expected,
+                            got_hash=r["row_hash"],
+                        ),
                     )
                 prev = r["row_hash"]
                 verified += 1
@@ -99,14 +128,25 @@ class EgressAudit:
             ok, mm = self._manifest.check({"egress_log": prev}, {"egress_log": verified})
             if not ok and mm is not None:
                 return ChainStatus(
-                    server="osint-egress-audit", scope="all", ok=False, head_hash={"egress_log": prev},
+                    server="osint-egress-audit",
+                    scope="all",
+                    ok=False,
+                    head_hash={"egress_log": prev},
                     rows_verified=verified,
                     mismatch=ChainMismatch(
-                        table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                        table=mm.table,
+                        row_id=mm.row_id,
+                        expected_hash=mm.expected_hash,
+                        got_hash=mm.got_hash,
                     ),
                 )
-            return ChainStatus(server="osint-egress-audit", scope="all", ok=True, head_hash={"egress_log": prev},
-                               rows_verified=verified)
+            return ChainStatus(
+                server="osint-egress-audit",
+                scope="all",
+                ok=True,
+                head_hash={"egress_log": prev},
+                rows_verified=verified,
+            )
 
     def count(self) -> int:
         return self._conn.execute("SELECT COUNT(*) c FROM egress_log").fetchone()["c"]

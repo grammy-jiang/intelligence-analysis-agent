@@ -72,7 +72,9 @@ def test_fetch_too_many_redirects():
         return 302, {"location": "https://good.com/loop"}, b""
 
     with pytest.raises(EgressError, match="too many redirects"):
-        fetch_pinned("https://good.com/x", opener=opener, resolver=_resolver(PUBLIC), max_redirects=3)
+        fetch_pinned(
+            "https://good.com/x", opener=opener, resolver=_resolver(PUBLIC), max_redirects=3
+        )
 
 
 def test_fetch_size_cap():

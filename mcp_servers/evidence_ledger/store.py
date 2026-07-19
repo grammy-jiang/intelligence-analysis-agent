@@ -76,7 +76,9 @@ class EvidenceStore:
         # WAL silently falls back to the prior mode on some filesystems; fail loud rather than run under
         # concurrency assumptions the journal mode does not actually provide.
         if db_path != ":memory:" and str(mode).lower() != "wal":
-            raise EvidenceError(f"could not enable WAL journal mode (got {mode!r}); refusing to run.")
+            raise EvidenceError(
+                f"could not enable WAL journal mode (got {mode!r}); refusing to run."
+            )
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(
             """
@@ -119,7 +121,9 @@ class EvidenceStore:
             self._lock_fh = None
 
     def _head(self, table: str) -> str:
-        if table not in _TABLES:  # N4: survives `python -O` (assert is stripped); not attacker-controlled
+        if (
+            table not in _TABLES
+        ):  # N4: survives `python -O` (assert is stripped); not attacker-controlled
             raise ValueError(f"unknown table: {table!r}")
         r = self._conn.execute(
             f"SELECT row_hash FROM {table} ORDER BY seq DESC LIMIT 1"  # noqa: S608 - internal literal
@@ -165,17 +169,26 @@ class EvidenceStore:
         # expected_observables: cap the ENTRY COUNT and, per entry, the KEY and the VALUE — the value cap is the
         # DoS closure the tool-boundary 256-entry count missed ({"h": "A"*50_000_000} was one entry, uncapped).
         if len(expected_observables) > _MAX_OBSERVABLES:
-            raise EvidenceError(f"expected_observables has too many entries (max {_MAX_OBSERVABLES}).")
+            raise EvidenceError(
+                f"expected_observables has too many entries (max {_MAX_OBSERVABLES})."
+            )
         for k, v in expected_observables.items():
             if len(k) > _MAX_ID:
                 raise EvidenceError(f"expected_observables key exceeds max length {_MAX_ID}.")
             if len(v) > _MAX_OBSERVABLE_VAL:
-                raise EvidenceError(f"expected_observables value exceeds max length {_MAX_OBSERVABLE_VAL}.")
+                raise EvidenceError(
+                    f"expected_observables value exceeds max length {_MAX_OBSERVABLE_VAL}."
+                )
         evidence_id = uuid.uuid4().hex
         payload = {
-            "evidence_id": evidence_id, "case_id": case_id, "item": item, "source_id": source_id,
-            "evidence_type": evidence_type, "source_channel": source_channel,
-            "expected_observables": expected_observables, "pii": bool(pii),
+            "evidence_id": evidence_id,
+            "case_id": case_id,
+            "item": item,
+            "source_id": source_id,
+            "evidence_type": evidence_type,
+            "source_channel": source_channel,
+            "expected_observables": expected_observables,
+            "pii": bool(pii),
         }
         with self._write_lock:
             prev = self._head("evidence")
@@ -188,15 +201,25 @@ class EvidenceStore:
                     "INSERT INTO evidence(evidence_id, case_id, item, source_id, evidence_type, source_channel, "
                     "expected_observables, pii, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?)",
                     (
-                        evidence_id, case_id, item, source_id, evidence_type, source_channel,
-                        json.dumps(expected_observables, sort_keys=True), int(bool(pii)), prev, rh,
+                        evidence_id,
+                        case_id,
+                        item,
+                        source_id,
+                        evidence_type,
+                        source_channel,
+                        json.dumps(expected_observables, sort_keys=True),
+                        int(bool(pii)),
+                        prev,
+                        rh,
                     ),
                 )
             self._manifest.append("evidence", rh)
         return EvidenceRef(evidence_id=evidence_id, case_id=case_id, pii=bool(pii))
 
     def _evidence_row(self, evidence_id: str) -> sqlite3.Row:
-        r = self._conn.execute("SELECT * FROM evidence WHERE evidence_id=?", (evidence_id,)).fetchone()
+        r = self._conn.execute(
+            "SELECT * FROM evidence WHERE evidence_id=?", (evidence_id,)
+        ).fetchone()
         if not r:
             raise EvidenceError(f"unknown evidence_id: {evidence_id}")
         return r
@@ -217,7 +240,7 @@ class EvidenceStore:
                 self.staleness.mark_stale(evidence_id, "grade")
                 self.staleness.mark_graded(evidence_id, judgment_source)
                 return
-            except Exception as e:  # noqa: BLE001 - surfaced, never swallowed
+            except Exception as e:  # broad by design — surfaced, never swallowed
                 if attempt == 2:
                     print(
                         f"[evidence-ledger] STALENESS SIGNAL WRITE FAILED for {evidence_id} "
@@ -231,8 +254,16 @@ class EvidenceStore:
                     ) from e
 
     def _insert_grade(
-        self, evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale, reason,
-        *, require_first: bool,
+        self,
+        evidence_id,
+        reliability,
+        credibility,
+        diagnosticity,
+        judgment_source,
+        rationale,
+        reason,
+        *,
+        require_first: bool,
     ) -> None:
         # MF-1(a): enforce the judgment_source domain at the store layer, independent of the tool-boundary
         # pydantic Literal — the tag can only ever be one of the two intended values, via any code path.
@@ -251,9 +282,15 @@ class EvidenceStore:
                 raise EvidenceError(f"{name} exceeds max length {cap}.")
         graded_at = now_iso()
         payload = {
-            "evidence_id": evidence_id, "reliability": reliability, "credibility": credibility,
-            "diagnosticity": diagnosticity, "analyst_id": self.analyst_id, "judgment_source": judgment_source,
-            "rationale": rationale, "reason": reason, "graded_at": graded_at,
+            "evidence_id": evidence_id,
+            "reliability": reliability,
+            "credibility": credibility,
+            "diagnosticity": diagnosticity,
+            "analyst_id": self.analyst_id,
+            "judgment_source": judgment_source,
+            "rationale": rationale,
+            "reason": reason,
+            "graded_at": graded_at,
         }
         with self._write_lock:
             # M1: the first-grade / has-prior-grade check MUST be inside the same lock as the insert.
@@ -262,9 +299,13 @@ class EvidenceStore:
             # first grades, breaking the single-first-grade / supersede-via-update_grade invariant.
             existing = self._effective_grade(evidence_id)
             if require_first and existing is not None:
-                raise EvidenceError("a grade already exists for this evidence — use update_grade to supersede.")
+                raise EvidenceError(
+                    "a grade already exists for this evidence — use update_grade to supersede."
+                )
             if not require_first and existing is None:
-                raise EvidenceError("no prior grade exists for this evidence — use grade_evidence first.")
+                raise EvidenceError(
+                    "no prior grade exists for this evidence — use grade_evidence first."
+                )
             prev = self._head("grades")
             rh = row_hash(prev, payload)
             # M3/atomic: `with self._conn` commits on success and ROLLS BACK on a failed insert (mirrors
@@ -274,8 +315,17 @@ class EvidenceStore:
                     "INSERT INTO grades(evidence_id, reliability, credibility, diagnosticity, analyst_id, "
                     "judgment_source, rationale, reason, graded_at, prev_hash, row_hash) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        evidence_id, reliability, credibility, diagnosticity, self.analyst_id, judgment_source,
-                        rationale, reason, graded_at, prev, rh,
+                        evidence_id,
+                        reliability,
+                        credibility,
+                        diagnosticity,
+                        self.analyst_id,
+                        judgment_source,
+                        rationale,
+                        reason,
+                        graded_at,
+                        prev,
+                        rh,
                     ),
                 )
             self._manifest.append("grades", rh)
@@ -288,19 +338,40 @@ class EvidenceStore:
     ) -> EvidenceRecord:
         self._evidence_row(evidence_id)
         self._insert_grade(
-            evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale, "",
+            evidence_id,
+            reliability,
+            credibility,
+            diagnosticity,
+            judgment_source,
+            rationale,
+            "",
             require_first=True,
         )
         return self.get_evidence(evidence_id, redact_pii=True)
 
     def update_grade(
-        self, evidence_id, reliability, credibility, diagnosticity, reason, judgment_source, rationale=""
+        self,
+        evidence_id,
+        reliability,
+        credibility,
+        diagnosticity,
+        reason,
+        judgment_source,
+        rationale="",
     ) -> EvidenceRecord:
         self._evidence_row(evidence_id)
         if not reason.strip():
-            raise EvidenceError("update_grade requires a non-empty reason (a superseding correction).")
+            raise EvidenceError(
+                "update_grade requires a non-empty reason (a superseding correction)."
+            )
         self._insert_grade(
-            evidence_id, reliability, credibility, diagnosticity, judgment_source, rationale, reason,
+            evidence_id,
+            reliability,
+            credibility,
+            diagnosticity,
+            judgment_source,
+            rationale,
+            reason,
             require_first=False,
         )
         return self.get_evidence(evidence_id, redact_pii=True)
@@ -315,17 +386,29 @@ class EvidenceStore:
         for i, g in enumerate(grade_rows):
             grades.append(
                 Grade(
-                    reliability=g["reliability"], credibility=g["credibility"], diagnosticity=g["diagnosticity"],
-                    analyst_id=g["analyst_id"], judgment_source=g["judgment_source"], rationale=g["rationale"],
-                    reason=g["reason"], graded_at=g["graded_at"], superseded=(i < n - 1),
+                    reliability=g["reliability"],
+                    credibility=g["credibility"],
+                    diagnosticity=g["diagnosticity"],
+                    analyst_id=g["analyst_id"],
+                    judgment_source=g["judgment_source"],
+                    rationale=g["rationale"],
+                    reason=g["reason"],
+                    graded_at=g["graded_at"],
+                    superseded=(i < n - 1),
                 )
             )
         item = "REDACTED" if (r["pii"] and redact_pii) else r["item"]
         return EvidenceRecord(
-            evidence_id=r["evidence_id"], case_id=r["case_id"], item=item, source_id=r["source_id"],
-            evidence_type=r["evidence_type"], source_channel=r["source_channel"],
-            expected_observables=json.loads(r["expected_observables"]), grades=grades,
-            pii=bool(r["pii"]), row_hash=r["row_hash"],
+            evidence_id=r["evidence_id"],
+            case_id=r["case_id"],
+            item=item,
+            source_id=r["source_id"],
+            evidence_type=r["evidence_type"],
+            source_channel=r["source_channel"],
+            expected_observables=json.loads(r["expected_observables"]),
+            grades=grades,
+            pii=bool(r["pii"]),
+            row_hash=r["row_hash"],
         )
 
     def list_evidence(
@@ -352,7 +435,8 @@ class EvidenceStore:
 
     def get_source_history(self, source_id: str, redact_pii: bool = True) -> SourceHistory:
         ev_rows = self._conn.execute(
-            "SELECT evidence_id, case_id, seq FROM evidence WHERE source_id=? ORDER BY seq ASC", (source_id,)
+            "SELECT evidence_id, case_id, seq FROM evidence WHERE source_id=? ORDER BY seq ASC",
+            (source_id,),
         ).fetchall()
         seq_items: list[tuple[int, str, str]] = []  # (grade_seq, reliability, case_id)
         n_draft = 0
@@ -374,8 +458,12 @@ class EvidenceStore:
             a, b = RELIABILITY_ORDER[grade_sequence[-2]], RELIABILITY_ORDER[grade_sequence[-1]]
             direction = "improved" if b < a else ("worsened" if b > a else "same")
         return SourceHistory(
-            source_id=source_id, cases=cases, grade_sequence=grade_sequence, last_change_direction=direction,
-            n=len(grade_sequence), n_model_draft_excluded=n_draft,
+            source_id=source_id,
+            cases=cases,
+            grade_sequence=grade_sequence,
+            last_change_direction=direction,
+            n=len(grade_sequence),
+            n_model_draft_excluded=n_draft,
         )
 
     # ---- integrity ---------------------------------------------------------
@@ -403,10 +491,15 @@ class EvidenceStore:
                     expected = row_hash(prev, payload)
                     if expected != r["row_hash"] or r["prev_hash"] != prev:
                         return ChainStatus(
-                            server="evidence-ledger", scope="all", ok=False, head_hash=heads,
+                            server="evidence-ledger",
+                            scope="all",
+                            ok=False,
+                            head_hash=heads,
                             rows_verified=verified,
                             mismatch=ChainMismatch(
-                                table=table, row_id=str(r["seq"]), expected_hash=expected,
+                                table=table,
+                                row_id=str(r["seq"]),
+                                expected_hash=expected,
                                 got_hash=r["row_hash"],
                             ),
                         )
@@ -420,27 +513,43 @@ class EvidenceStore:
             ok, mm = self._manifest.check(heads, counts)
             mismatch = (
                 ChainMismatch(
-                    table=mm.table, row_id=mm.row_id, expected_hash=mm.expected_hash, got_hash=mm.got_hash
+                    table=mm.table,
+                    row_id=mm.row_id,
+                    expected_hash=mm.expected_hash,
+                    got_hash=mm.got_hash,
                 )
                 if mm is not None
                 else None
             )
             return ChainStatus(
-                server="evidence-ledger", scope="all", ok=ok, head_hash=heads,
-                rows_verified=verified, mismatch=mismatch,
+                server="evidence-ledger",
+                scope="all",
+                ok=ok,
+                head_hash=heads,
+                rows_verified=verified,
+                mismatch=mismatch,
             )
 
     def _payload_for(self, table: str, r: sqlite3.Row) -> dict:
         if table == "evidence":
             return {
-                "evidence_id": r["evidence_id"], "case_id": r["case_id"], "item": r["item"],
-                "source_id": r["source_id"], "evidence_type": r["evidence_type"],
+                "evidence_id": r["evidence_id"],
+                "case_id": r["case_id"],
+                "item": r["item"],
+                "source_id": r["source_id"],
+                "evidence_type": r["evidence_type"],
                 "source_channel": r["source_channel"],
-                "expected_observables": json.loads(r["expected_observables"]), "pii": bool(r["pii"]),
+                "expected_observables": json.loads(r["expected_observables"]),
+                "pii": bool(r["pii"]),
             }
         return {
-            "evidence_id": r["evidence_id"], "reliability": r["reliability"], "credibility": r["credibility"],
-            "diagnosticity": r["diagnosticity"], "analyst_id": r["analyst_id"],
-            "judgment_source": r["judgment_source"], "rationale": r["rationale"], "reason": r["reason"],
+            "evidence_id": r["evidence_id"],
+            "reliability": r["reliability"],
+            "credibility": r["credibility"],
+            "diagnosticity": r["diagnosticity"],
+            "analyst_id": r["analyst_id"],
+            "judgment_source": r["judgment_source"],
+            "rationale": r["rationale"],
+            "reason": r["reason"],
             "graded_at": r["graded_at"],
         }

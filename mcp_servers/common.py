@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import NamedTuple
 
 from pydantic import BaseModel
@@ -22,7 +22,7 @@ def row_hash(prev_hash: str, payload: dict) -> str:
 
 
 def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class ChainMismatch(BaseModel):
@@ -120,7 +120,9 @@ class Manifest:
         if not os.path.exists(self.path):
             if non_genesis:
                 t = sorted(non_genesis)[0]
-                return False, ManifestMismatch(t, "<manifest-missing>", heads.get(t, GENESIS), GENESIS)
+                return False, ManifestMismatch(
+                    t, "<manifest-missing>", heads.get(t, GENESIS), GENESIS
+                )
             return True, None
         last: dict[str, str] = {}
         last_count: dict[str, int] = {}
@@ -140,7 +142,10 @@ class Manifest:
                 expected = row_hash(prev, payload)
                 if e.get("prev_manifest_hash") != prev or e.get("manifest_hash") != expected:
                     return False, ManifestMismatch(
-                        e.get("table", "?"), "<manifest-chain>", expected, str(e.get("manifest_hash", ""))
+                        e.get("table", "?"),
+                        "<manifest-chain>",
+                        expected,
+                        str(e.get("manifest_hash", "")),
                     )
                 prev = expected
                 last[e["table"]] = e["head"]
@@ -154,7 +159,8 @@ class Manifest:
             m_count = last_count.get(table, line_count.get(table, 0))
             if m_head != heads.get(table, GENESIS) or m_count != counts.get(table, 0):
                 return False, ManifestMismatch(
-                    table, "<manifest>",
+                    table,
+                    "<manifest>",
                     f"{m_head} (manifest: {m_count} rows)",
                     f"{heads.get(table, GENESIS)} (tables: {counts.get(table, 0)} rows)",
                 )

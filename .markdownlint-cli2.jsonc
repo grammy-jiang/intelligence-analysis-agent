@@ -1,0 +1,21 @@
+// markdownlint-cli2 configuration for this repo's own Markdown (docs/, README.md).
+//
+// Scope: the vendored / deployed product under .claude/ (the reviewer subagents
+// and skill modules, re-exported from the factory — "do not edit; re-export to
+// update") authors Markdown in its own conventions and is excluded here and at
+// the pre-commit hook level. This file tunes rules for the docs we hand-maintain.
+{
+  "config": {
+    "default": true,
+    "MD013": false,                 // line-length: design/prose docs run long by intent
+    "MD033": false,                 // inline HTML: allowed (e.g. <br/> inside mermaid labels)
+    "MD041": false,                 // first-line-in-file H1: not required
+    "MD060": false,                 // table pipe-padding style: compact tables are fine
+    "MD036": false,                 // emphasis-as-heading: false-fires on italic placeholder asides
+    "MD024": { "siblings_only": true } // duplicate headings ok under different parents
+  },
+  "ignores": [
+    ".claude/**",
+    "**/node_modules/**"
+  ]
+}
