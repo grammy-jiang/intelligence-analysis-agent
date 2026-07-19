@@ -176,7 +176,13 @@ def get_calibration_report(
     ] = None,
 ) -> CalibrationReport:
     """COMPUTE Brier + a calibration table + Murphy resolution/reliability over analyst_confirmed, non-voided,
-    resolved forecasts. Read-only; no judgment invented."""
+    resolved forecasts. Read-only; no judgment invented.
+
+    Also returns three ADVISORY hindsight-audit signals (never correctness failures; nothing is excluded from
+    scoring): `resolved_before_horizon` (resolved strictly before a parseable ISO-date horizon) together with
+    its coverage `n_horizon_checked` / `n_horizon_skipped`, and `resolved_within_min_latency` (resolved within
+    24h of the SERVER-authored locked_at — the ungameable companion that catches same-day / duration-horizon
+    cases the horizon signal misses). Treat all three as review prompts, not failures."""
     try:
         return store.get_calibration_report(case_id)
     except ForecastError as e:

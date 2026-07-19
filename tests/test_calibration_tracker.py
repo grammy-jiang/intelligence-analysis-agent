@@ -215,6 +215,25 @@ def test_resolved_before_horizon_advisory(store):
     assert r.resolved_before_horizon == 2
 
 
+def test_resolved_within_min_latency_advisory(store):
+    """The horizon signal is blind to the exact M3 attack in its common form (an ISO-8601 DURATION or a
+    free-form horizon, resolved the instant after locking), and the coverage counters disclose that blindness.
+    The ungameable locked_at-anchored signal catches the log-then-immediately-self-grade both times."""
+    # (a) ISO-8601 DURATION horizon (a format the horizon Field's own docs bless) — resolved at lock time.
+    d = store.log_forecast("m", "dur?", 0.5, "def", "P30D", "analyst_confirmed")
+    store.resolve_forecast(d.forecast_id, True, d.locked_at)
+    # (b) free-form horizon — resolved at lock time.
+    f = store.log_forecast("m", "ff?", 0.5, "def", "end of Q2", "analyst_confirmed")
+    store.resolve_forecast(f.forecast_id, True, f.locked_at)
+    r = store.get_calibration_report(case_id="m")
+    assert r.n == 2  # both still scored — advisory excludes nothing
+    # horizon signal is blind: neither horizon parses as a date -> 0 flagged, 0 checked, 2 skipped.
+    assert r.resolved_before_horizon == 0
+    assert r.n_horizon_checked == 0 and r.n_horizon_skipped == 2
+    # ...but the ungameable locked_at-anchored signal catches BOTH immediate resolutions.
+    assert r.resolved_within_min_latency == 2
+
+
 # --- S2: malformed pagination cursor is a business error, not a raw ValueError leak ---
 def test_bad_cursor_rejected(store):
     _log(store)

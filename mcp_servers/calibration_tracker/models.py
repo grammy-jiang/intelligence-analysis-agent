@@ -69,7 +69,32 @@ class CalibrationReport(BaseModel):
             "ADVISORY audit signal (NOT a correctness failure): count of resolved forecasts whose "
             "resolved_at fell strictly BEFORE a stated, ISO-8601-parseable horizon — surfaced for human "
             "review of possible premature/hindsight resolution. Early resolution is legitimate (an outcome "
-            "can be known before the stated deadline) and a free-form (non-date) horizon is skipped."
+            "can be known before the stated deadline). A non-date horizon — free-form ('end of Q2') OR an "
+            "ISO-8601 DURATION ('P30D') — is skipped (see n_horizon_checked/n_horizon_skipped for coverage; "
+            "resolved_within_min_latency is the ungameable locked_at-anchored companion signal)."
+        ),
+    )
+    n_horizon_checked: int = Field(
+        default=0,
+        description=(
+            "Coverage denominator for resolved_before_horizon: resolutions whose horizon parsed as an "
+            "ISO-8601 date and was actually compared. resolved_before_horizon=0 WITH n_horizon_checked=0 "
+            "means NO coverage (every horizon was free-form/duration), not 'no premature resolutions'."
+        ),
+    )
+    n_horizon_skipped: int = Field(
+        default=0,
+        description=(
+            "Resolutions whose horizon did not parse as an ISO-8601 date — free-form ('end of Q2') OR an "
+            "ISO-8601 DURATION ('P30D') — and so contributed no horizon signal."
+        ),
+    )
+    resolved_within_min_latency: int = Field(
+        default=0,
+        description=(
+            "ADVISORY audit signal keyed to the SERVER-authored locked_at (not the analyst-authored horizon): "
+            "count of forecasts resolved within 24h of being locked — flags the log-then-immediately-self-grade "
+            "hindsight pattern the horizon signal misses. Advisory, not a gate; early resolution is legitimate."
         ),
     )
     brier: float | None

@@ -58,6 +58,13 @@ MAX_ID = 512
 MAX_SHORT = 500
 MAX_TEXT = 4000
 
+# Advisory hindsight heuristic (M3, the ungameable half): a resolution logged less than this long after the
+# SERVER-AUTHORED locked_at is flagged (resolved_within_min_latency) as a possible log-then-immediately-
+# self-grade with hindsight. Unlike the horizon-keyed signal, the anchor (locked_at) is NOT analyst-
+# controllable, so it catches the honest same-day / ISO-duration-horizon case the horizon comparison misses.
+# Advisory only — early resolution is legitimate and nothing is excluded from scoring.
+_MIN_RESOLUTION_LATENCY_S = 86400  # 24h
+
 
 def _parse_iso(value: str) -> datetime:
     """Parse an ISO-8601 date or datetime; naive values are treated as UTC. Raises ValueError on junk."""
@@ -500,7 +507,7 @@ class CalibrationStore:
         """
         # S3: scope the report to this analyst's own forecasts on a shared DB file.
         q = (
-            "SELECT f.forecast_id, f.probability, f.horizon FROM forecasts f "
+            "SELECT f.forecast_id, f.probability, f.horizon, f.locked_at FROM forecasts f "
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id = ? "
             "AND f.forecast_id NOT IN (SELECT forecast_id FROM voids) "
             + ("AND f.case_id = ? " if case_id else "")
@@ -511,23 +518,37 @@ class CalibrationStore:
         pairs: list[tuple[float, int]] = []
         n_corrected = 0
         resolved_before_horizon = 0
+        n_horizon_checked = 0
+        n_horizon_skipped = 0
+        resolved_within_min_latency = 0
         for r in rows:
             res = self._latest_resolution(r["forecast_id"])
             if res is not None:
                 pairs.append((r["probability"], int(res["outcome"])))
                 if self._correction_count(r["forecast_id"]) > 0:
                     n_corrected += 1
-                # ADVISORY (hindsight-auditability), NOT a gate: count resolutions that landed strictly
-                # before a stated, PARSEABLE horizon. `horizon` is free-form (S5) — a non-date such as
-                # "end of Q2" / "3mo" simply does not parse and is skipped (the ValueError is expected,
-                # never fatal). Early resolution is legitimate, so nothing is blocked or excluded here; the
-                # server merely records the analyst's resolved_at and flags the count for human review. The
-                # HARD anti-hindsight controls are resolve_forecast's immutable lock + resolved_at>=locked_at.
+                # ADVISORY (hindsight-auditability), NOT a gate. TWO independent signals — nothing here is
+                # blocked or excluded from Brier; the HARD controls are the immutable lock + resolved_at>=locked_at:
+                # (1) HORIZON-keyed: resolved strictly before a stated, PARSEABLE horizon. `horizon` is free-form
+                #     (S5) and ANALYST-authored, so a non-date ("end of Q2"), an ISO-8601 DURATION ("P30D"), or a
+                #     same-day date does not flag — n_horizon_checked/skipped disclose that coverage so
+                #     resolved_before_horizon=0 cannot be misread as "no risk" when it means "no parseable horizon".
+                # (2) LATENCY-keyed: resolved within _MIN_RESOLUTION_LATENCY_S of the SERVER-authored locked_at.
+                #     The anchor is not analyst-controllable, so this catches the honest log-then-immediately-
+                #     self-grade case signal (1) misses. Still advisory (an actor can assert a late resolved_at,
+                #     but that then lives on the hash-chained record).
                 try:
                     if _parse_iso(res["resolved_at"]) < _parse_iso(r["horizon"]):
                         resolved_before_horizon += 1
+                    n_horizon_checked += 1
                 except ValueError:
-                    pass  # free-form (non-date) horizon — skip, do not count.
+                    n_horizon_skipped += 1  # non-date horizon (free-form OR ISO-8601 duration) — no signal
+                try:
+                    gap = (_parse_iso(res["resolved_at"]) - _parse_iso(r["locked_at"])).total_seconds()
+                    if gap < _MIN_RESOLUTION_LATENCY_S:
+                        resolved_within_min_latency += 1
+                except ValueError:
+                    pass  # locked_at is server-authored ISO; guard defensively, never fatal
         n_voided = self._conn.execute(
             "SELECT COUNT(*) c FROM voids v JOIN forecasts f ON f.forecast_id=v.forecast_id "
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id=? "
@@ -539,6 +560,8 @@ class CalibrationStore:
         if n == 0:
             return CalibrationReport(
                 n=0, n_voided=n_voided, n_corrected=0, resolved_before_horizon=resolved_before_horizon,
+                n_horizon_checked=n_horizon_checked, n_horizon_skipped=n_horizon_skipped,
+                resolved_within_min_latency=resolved_within_min_latency,
                 brier=None, buckets=[], resolution_component=None,
                 reliability_component=None, note="no resolved analyst_confirmed forecasts yet",
             )
@@ -566,6 +589,9 @@ class CalibrationStore:
             n_voided=n_voided,
             n_corrected=n_corrected,
             resolved_before_horizon=resolved_before_horizon,
+            n_horizon_checked=n_horizon_checked,
+            n_horizon_skipped=n_horizon_skipped,
+            resolved_within_min_latency=resolved_within_min_latency,
             brier=round(brier, 6),
             buckets=buckets,
             resolution_component=round(resolution, 6),
