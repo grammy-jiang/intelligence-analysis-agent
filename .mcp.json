@@ -1,23 +1,23 @@
 {
   "mcpServers": {
     "calibration-tracker": {
-      "command": "python3",
-      "args": ["-m", "mcp_servers.calibration_tracker"],
+      "command": "uv",
+      "args": ["run", "--no-sync", "python", "-m", "mcp_servers.calibration_tracker"],
       "env": {}
     },
     "evidence-ledger": {
-      "command": "python3",
-      "args": ["-m", "mcp_servers.evidence_ledger"],
+      "command": "uv",
+      "args": ["run", "--no-sync", "python", "-m", "mcp_servers.evidence_ledger"],
       "env": {}
     },
     "ach-engine": {
-      "command": "python3",
-      "args": ["-m", "mcp_servers.ach_engine"],
+      "command": "uv",
+      "args": ["run", "--no-sync", "python", "-m", "mcp_servers.ach_engine"],
       "env": {}
     },
     "osint-toolkit": {
-      "command": "python3",
-      "args": ["-m", "mcp_servers.osint_toolkit"],
+      "command": "uv",
+      "args": ["run", "--no-sync", "python", "-m", "mcp_servers.osint_toolkit"],
       "env": {"OSINT_LIVE": "0"}
     }
   }
