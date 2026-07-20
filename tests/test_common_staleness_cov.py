@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_servers.common import GENESIS, Manifest
+from mcp_servers.common import GENESIS, ChainStatus, Manifest, verify_stable
 from mcp_servers.staleness import StalenessStore
 
 _TABLES = ("stale_events", "grade_signals")
@@ -187,3 +187,45 @@ def test_seed_manifest_baseline_migrates_predating_db(tmp_path):
         assert st2.verify_chain().ok is True  # the seeded manifest reconciles with the live rows
     finally:
         st2.close()
+
+
+# --------------------------------------------------------------------------- #
+# common.verify_stable — the retry/tolerance discrimination (Sec-S6). The cross-server S2 tests only use a
+# PERSISTENT tamper, so they'd pass even if the retry were broken; these pin the actual logic with a stub.
+# --------------------------------------------------------------------------- #
+def _seq_verify(oks):
+    """A verify_fn stub returning a preset sequence of ChainStatus.ok values; records the call count."""
+    calls = {"n": 0}
+
+    def fn() -> ChainStatus:
+        ok = oks[min(calls["n"], len(oks) - 1)]
+        calls["n"] += 1
+        return ChainStatus(server="t", scope="all", ok=ok, head_hash={}, rows_verified=0)
+
+    return fn, calls
+
+
+def test_verify_stable_tolerates_transient_mismatch():
+    # benign cross-process window: first read mismatches, the retry succeeds -> ok, exactly 2 calls.
+    fn, calls = _seq_verify([False, True])
+    status = verify_stable(fn, attempts=3, delay=0)
+    assert status.ok is True and calls["n"] == 2
+
+
+def test_verify_stable_fails_closed_on_persistent_mismatch():
+    # a real tamper: every attempt mismatches -> refuse, and exactly `attempts` calls are made (no more).
+    fn, calls = _seq_verify([False, False, False, False])
+    status = verify_stable(fn, attempts=3, delay=0)
+    assert status.ok is False and calls["n"] == 3
+
+
+def test_verify_stable_ok_first_try_makes_one_call():
+    fn, calls = _seq_verify([True, False])  # 2nd value proves it never retries a healthy read
+    status = verify_stable(fn, attempts=3, delay=0)
+    assert status.ok is True and calls["n"] == 1
+
+
+def test_verify_stable_attempts_one_disables_retry():
+    fn, calls = _seq_verify([False, True])
+    status = verify_stable(fn, attempts=1, delay=0)
+    assert status.ok is False and calls["n"] == 1  # attempts=1 -> one call, no tolerance

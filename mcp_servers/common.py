@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sys
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
@@ -43,23 +44,48 @@ class ChainStatus(BaseModel):
     mismatch: ChainMismatch | None = None
 
 
+# verify_stable retry budget (env-tunable so a slow-disk/throttled-IOPS deployment whose fsync stalls past
+# the default window can widen it rather than fail spuriously). A real tamper reproduces regardless of budget.
+_VERIFY_ATTEMPTS = max(1, int(os.environ.get("MCP_VERIFY_ATTEMPTS", "3")))
+_VERIFY_DELAY_S = max(0.0, float(os.environ.get("MCP_VERIFY_DELAY_S", "0.05")))
+
+
 def verify_stable(
-    verify_fn: Callable[[], ChainStatus], attempts: int = 3, delay: float = 0.05
+    verify_fn: Callable[[], ChainStatus],
+    attempts: int | None = None,
+    delay: float | None = None,
+    label: str = "verify_chain",
 ) -> ChainStatus:
     """Call a store's verify_chain(), tolerating the benign cross-process commit -> manifest-append window.
 
     A writer commits a row, then appends the manifest attestation as a SEPARATE fsync'd step (they cannot
     share one transaction — different files). A verify from ANOTHER process that lands between the two sees a
     table head/count one ahead of the manifest and reports a spurious mismatch. Such a race self-resolves
-    within one append, so retry a few times before trusting a mismatch; GENUINE tampering reproduces on every
-    attempt (the DB and manifest stay inconsistent), so the fail-closed guarantee is unchanged. Returns the
-    final ChainStatus. Used by the startup boot gates and by ach-engine's per-score staleness recheck."""
+    within one append, so retry a few times before trusting a mismatch.
+
+    Fail-closed scope: a PASSIVE or persistent tamper (the DB and manifest stay inconsistent) reproduces on
+    every attempt and is still refused. It does NOT defend against an ACTIVE co-resident attacker who can
+    forge a self-consistent chain and revert it inside the retry window — that is the already-disclosed
+    "rewrite the files and recompute the chain forward" residual (see Manifest), not closed here. So that a
+    forge-and-revert cannot pass invisibly, ANY retry (>1 attempt) is logged to stderr — an operator can read
+    a lone retry as benign cross-process jitter but a pattern as a possible active tamper. attempts/delay
+    default from MCP_VERIFY_ATTEMPTS / MCP_VERIFY_DELAY_S. Returns the final ChainStatus."""
+    n = _VERIFY_ATTEMPTS if attempts is None else attempts
+    d = _VERIFY_DELAY_S if delay is None else delay
     status = verify_fn()
-    for _ in range(max(0, attempts - 1)):
+    used = 1
+    for _ in range(max(0, n - 1)):
         if status.ok:
             break
-        time.sleep(delay)
+        time.sleep(d)
         status = verify_fn()
+        used += 1
+    if used > 1:
+        print(
+            f"[verify_stable] {label}: chain reconciled after {used} attempts (ok={status.ok}) — "
+            "a benign cross-process append window, or investigate a possible active tamper.",
+            file=sys.stderr,
+        )
     return status
 
 
