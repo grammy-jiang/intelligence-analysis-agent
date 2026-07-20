@@ -245,7 +245,12 @@ def verify_chain() -> ChainStatus:
 def verify_signals_chain() -> ChainStatus:
     """Verify the SHARED cross-server signal store (stale_events + grade_signals) that ach-engine's
     collect-then-grade gate depends on. This is a DIFFERENT store from verify_chain — run BOTH to fully
-    check integrity."""
+    check integrity.
+
+    NOTE: this is the same UNKEYED SHA-256 mechanism as verify_chain — tamper-evidence rests entirely on OS
+    file-permission isolation of the staleness DB + manifest (kept 0600) from any other local writer, INCLUDING
+    a co-resident agent with a filesystem/bash tool; it is NOT protection against an actor who rewrites the
+    files and recomputes the chain forward."""
     return staleness.verify_chain()
 
 
