@@ -74,8 +74,8 @@ in evidence-ledger.
 
 Integrity: verify_chain checks THIS server's own append-only chains (matrices/hypotheses/cells) reconciled
 against a manifest (tail-truncation evidence). It does NOT cover the shared staleness / grade-signal store
-the scoring gate depends on — verify_signals_chain does that (and score_matrix re-checks it automatically
-before it trusts the gate). NOTE: this is an UNKEYED SHA-256 hash chain — its tamper-evidence rests entirely
+the scoring gate depends on — verify_signals_chain does that (and score_matrix + rate_cell re-check it
+automatically before trusting the gate). NOTE: this is an UNKEYED SHA-256 hash chain — its tamper-evidence rests entirely
 on OS file-permission isolation of the DB + manifest (kept 0600) from any other local writer, INCLUDING a
 co-resident agent that also holds a filesystem/bash tool. It is NOT protection against an actor who can
 rewrite the files and recompute the chain forward.
@@ -206,7 +206,10 @@ def rate_cell(
     """Append a consistency RATING for one (evidence × hypothesis) cell (required input).
 
     Errors on unknown matrix_id/hypothesis_id, blank evidence_id, an out-of-domain rating value, or an
-    unbacked analyst_confirmed.
+    unbacked analyst_confirmed (evidence not itself analyst_confirmed-graded — grade it in evidence-ledger).
+    For judgment_source='analyst_confirmed' it ALSO refuses if the shared staleness / grade-signal store fails
+    its own integrity check — a distinct, store-level condition: STOP, run verify_signals_chain, and restore
+    from the manifest rather than re-grading.
 
     Confirmation boundary (the same honest limit as judgment_source / the calibration horizon): here
     `analyst_confirmed` is EVIDENCE-anchored — it means the evidence carries an out-of-band analyst_confirmed
@@ -230,6 +233,10 @@ def score_matrix(
     (coverage gap), or any effective cell is stale, model_draft, or evidence not analyst_confirmed-graded
     — enumerating the blocking cells in the error.
 
+    It ALSO refuses, BEFORE any cell is evaluated, if the shared staleness / grade-signal store itself fails
+    its integrity check — a single store-level error (no cell list): on that one, STOP, run verify_signals_chain,
+    and restore from the manifest rather than re-rating or re-grading.
+
     The analyst_confirmed gate is EVIDENCE-anchored, not per-rating verified (see rate_cell): a passing score
     means every cell's evidence is confirmed-graded and fresh, NOT that a human vetted each (consistency,
     strength) value — review the effective cells via get_matrix before trusting a ranking."""
@@ -241,8 +248,11 @@ def score_matrix(
 def get_matrix(
     matrix_id: Annotated[str, Field(max_length=_MAX_ID, description="The matrix to read.")],
 ) -> Matrix:
-    """Read the matrix + effective cells. `stale` is best-effort and MAY lag — score_matrix is the sole
-    source of truth for scoring-readiness."""
+    """Read the matrix + effective cells. Each cell carries `reason` + `superseded` (True if it was re-rated —
+    review these before scoring, this is the human gate). `stale` is best-effort and MAY lag — score_matrix is
+    the sole source of truth for scoring-readiness. `signals_ok` reports the shared staleness store's integrity
+    at read time; if False, the `stale` flags cannot be trusted — run verify_signals_chain and restore before
+    relying on this matrix."""
     return store.get_matrix(matrix_id)
 
 
@@ -278,9 +288,15 @@ def verify_chain() -> ChainStatus:
 def verify_signals_chain() -> ChainStatus:
     """Verify the SHARED staleness / grade-signal store (stale_events + grade_signals) whose
     latest_grade_source drives score_matrix's collect-then-grade + staleness gate. A DIFFERENT store from
-    verify_chain (which walks only this server's own tables). score_matrix already re-checks this store
-    automatically before it trusts the gate; call this to audit it on demand. STOP and escalate if ok=False —
-    a tampered signal store can forge the analyst_confirmed gate."""
+    verify_chain (which walks only this server's own tables). score_matrix AND rate_cell (when recording an
+    analyst_confirmed rating) already re-check this store automatically before trusting the gate; call this to
+    audit it on demand. STOP and escalate if ok=False — a tampered signal store can forge the analyst_confirmed
+    gate.
+
+    NOTE: this is the same UNKEYED SHA-256 mechanism as verify_chain — tamper-evidence rests entirely on OS
+    file-permission isolation of the staleness DB + manifest (kept 0600) from any other local writer, INCLUDING
+    a co-resident agent with a filesystem/bash tool; it is NOT protection against an actor who rewrites the
+    files and recomputes the chain forward."""
     return staleness.verify_chain()
 
 

@@ -43,6 +43,10 @@ class Matrix(BaseModel):
     case_id: str
     hypotheses: list[HypothesisItem]
     cells: list[Cell]
+    # S4: health of the SHARED staleness / grade-signal store at read time. False means the `stale` flags
+    # below cannot be trusted (a possible tamper) — treat the matrix as unreviewable until verify_signals_chain
+    # is run and the store restored. Not part of the hash chain; a read-time advisory for the human gate.
+    signals_ok: bool = True
 
 
 class CellRecord(BaseModel):

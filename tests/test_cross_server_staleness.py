@@ -227,3 +227,26 @@ def test_get_matrix_surfaces_supersede_history(tmp_path):
     finally:
         ach.close()
         st.close()
+
+
+def test_get_matrix_reports_signal_store_health(tmp_path):
+    """S4: get_matrix is the human gate, and its `stale` display reads the shared staleness store. A tampered
+    store must surface signals_ok=False so a reviewing analyst does not trust a possibly-forged `stale` flag."""
+    clk = Clock()
+    db = str(tmp_path / "stale.db")
+    st = StalenessStore(db, clock=clk)
+    ach = ACHStore(str(tmp_path / "ach.db"), st, analyst_id="t", clock=clk)
+    try:
+        ref = ach.create_matrix("c", ["H1"])
+        h1 = ref.hypotheses[0].hypothesis_id
+        st.mark_graded("E1", "analyst_confirmed")
+        ach.rate_cell(ref.matrix_id, "E1", h1, "C", "weak", "analyst_confirmed")
+        assert ach.get_matrix(ref.matrix_id).signals_ok is True  # healthy store
+
+        _tamper_delete_last_grade_signal(db)
+        assert (
+            ach.get_matrix(ref.matrix_id).signals_ok is False
+        )  # tamper surfaced, not silently trusted
+    finally:
+        ach.close()
+        st.close()
