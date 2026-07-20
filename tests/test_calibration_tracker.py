@@ -9,11 +9,10 @@ import sqlite3
 import pytest
 
 from mcp_servers.calibration_tracker.store import (
-    GENESIS,
     CalibrationStore,
     ForecastError,
-    _row_hash,
 )
+from mcp_servers.common import GENESIS, row_hash
 
 
 @pytest.fixture()
@@ -202,7 +201,7 @@ def test_resolved_at_must_be_iso(store):
 # PARSEABLE horizon. It is an audit SIGNAL for human review, NOT a hard gate: early resolution is
 # legitimate, a free-form horizon is skipped, and the report never crashes on a non-date horizon. Nothing
 # here is blocked or excluded from Brier — the hard anti-hindsight controls are the lock + anti-backdate.
-def test_resolved_before_horizon_advisory(store):
+def test_resolved_before_horizon_advisory(store, monkeypatch):
     # Two GENUINE early resolutions: parseable FUTURE horizon, resolved at lock time (now << 2999) -> count.
     for q in ("early1?", "early2?"):
         f = store.log_forecast("h", q, 0.5, "def", "2999-12-31", "analyst_confirmed")
@@ -213,20 +212,35 @@ def test_resolved_before_horizon_advisory(store):
     # Parseable PAST horizon, resolved after it (now >> 2000): on/after -> not counted.
     late = store.log_forecast("h", "late?", 0.5, "def", "2000-01-01", "analyst_confirmed")
     store.resolve_forecast(late.forecast_id, True, late.locked_at)
-    # resolved_at EXACTLY == a future horizon: the boundary is STRICTLY-before -> not counted
-    # (pins `<`; a `<=` mutation would wrongly count this one).
-    dot = store.log_forecast("h", "ondot?", 0.5, "def", "2999-12-31", "analyst_confirmed")
-    store.resolve_forecast(dot.forecast_id, True, "2999-12-31")
+    # resolved_at EXACTLY == the horizon: the boundary is STRICTLY-before -> not counted (pins `<`; a `<=`
+    # mutation would wrongly count this one). resolved_at is now bounded to real time, so freeze the store
+    # clock to a fixed PAST instant T and use T as BOTH horizon and resolved_at — a real, in-window equal
+    # case (T <= now, so it passes the anti-forward-dating bound; T == lock, so it passes anti-backdating).
+    frozen = "2026-01-01T00:00:00+00:00"
+    monkeypatch.setattr("mcp_servers.calibration_tracker.store.now_iso", lambda: frozen)
+    dot = store.log_forecast("h", "ondot?", 0.5, "def", frozen, "analyst_confirmed")
+    store.resolve_forecast(dot.forecast_id, True, frozen)
+    monkeypatch.undo()
     r = store.get_calibration_report(case_id="h")
     assert r.n == 5  # every forecast is still scored; the advisory NEVER excludes one from Brier
     # Only the two genuine earlies count: free-form is skipped, the past-horizon and on-the-dot ones do not.
     assert r.resolved_before_horizon == 2
 
 
+def test_resolved_at_cannot_be_future(store):
+    # M1 (anti-forward-dating): resolved_at more than a small skew past the server clock is rejected. This is
+    # what stops an analyst who already knows the outcome from asserting a far-future resolved_at to inflate
+    # the locked_at -> resolved_at gap past the min-latency hindsight flag (the bug this fix closes).
+    ref = _log(store)
+    with pytest.raises(ForecastError, match="future"):
+        store.resolve_forecast(ref.forecast_id, True, "2999-12-31")
+
+
 def test_resolved_within_min_latency_advisory(store):
-    """The horizon signal is blind to the exact M3 attack in its common form (an ISO-8601 DURATION or a
+    """The horizon signal is blind to the exact hindsight attack in its common form (an ISO-8601 DURATION or a
     free-form horizon, resolved the instant after locking), and the coverage counters disclose that blindness.
-    The ungameable locked_at-anchored signal catches the log-then-immediately-self-grade both times."""
+    The locked_at-anchored signal (harder to game, not ungameable) catches the log-then-immediately-self-grade
+    in exactly the case the horizon signal could not certify."""
     # (a) ISO-8601 DURATION horizon (a format the horizon Field's own docs bless) — resolved at lock time.
     d = store.log_forecast("m", "dur?", 0.5, "def", "P30D", "analyst_confirmed")
     store.resolve_forecast(d.forecast_id, True, d.locked_at)
@@ -238,8 +252,34 @@ def test_resolved_within_min_latency_advisory(store):
     # horizon signal is blind: neither horizon parses as a date -> 0 flagged, 0 checked, 2 skipped.
     assert r.resolved_before_horizon == 0
     assert r.n_horizon_checked == 0 and r.n_horizon_skipped == 2
-    # ...but the ungameable locked_at-anchored signal catches BOTH immediate resolutions.
+    # ...and because the horizon could NOT certify the timing (unparseable), the latency signal catches BOTH.
     assert r.resolved_within_min_latency == 2
+    # Cal-D: the headline note surfaces both the coverage gap and the flag rate, not just sample size.
+    assert "horizon-unparseable" in r.note and "possible hindsight" in r.note
+
+
+def test_min_latency_skips_on_schedule_short_fuse(store, monkeypatch):
+    # Cal-C: a PARSEABLE horizon the resolution reached on/after is already certified on-schedule by the
+    # horizon signal — the latency flag must NOT also fire there, or every honest next-day (short-fuse)
+    # forecast trips it. Freeze the clock so a genuine <24h forecast resolves AFTER its stated horizon.
+    monkeypatch.setattr(
+        "mcp_servers.calibration_tracker.store.now_iso", lambda: "2026-03-01T09:00:00+00:00"
+    )
+    f = store.log_forecast(
+        "sf", "passes today?", 0.6, "def", "2026-03-01T11:00:00+00:00", "analyst_confirmed"
+    )
+    # resolve ~4h after lock: still <24h, and AFTER the 11:00 horizon -> on schedule, not hindsight.
+    monkeypatch.setattr(
+        "mcp_servers.calibration_tracker.store.now_iso", lambda: "2026-03-01T13:00:00+00:00"
+    )
+    store.resolve_forecast(f.forecast_id, True, "2026-03-01T13:00:00+00:00")
+    monkeypatch.undo()
+    r = store.get_calibration_report(case_id="sf")
+    assert r.n == 1
+    assert r.n_horizon_checked == 1 and r.n_horizon_skipped == 0  # horizon parsed and was compared
+    assert r.resolved_before_horizon == 0  # resolved AFTER the horizon -> on schedule
+    # the gap is <24h, but the horizon vouched for the timing, so latency must NOT fire (no false positive).
+    assert r.resolved_within_min_latency == 0
 
 
 # --- S2: malformed pagination cursor is a business error, not a raw ValueError leak ---
@@ -393,8 +433,10 @@ def test_corrupt_locked_at_blocks_resolve(store, tmp_path):
     raw.execute("UPDATE forecasts SET locked_at='garbage' WHERE forecast_id=?", (ref.forecast_id,))
     raw.commit()
     raw.close()
+    # resolved_at is a valid PAST date (M1's anti-forward-dating check runs before the lock is read), so the
+    # corrupt-locked_at branch is what fails — not the future-date guard.
     with pytest.raises(ForecastError, match="corrupt lock timestamp"):
-        store.resolve_forecast(ref.forecast_id, True, "2030-01-01")
+        store.resolve_forecast(ref.forecast_id, True, "2020-01-01")
 
 
 # --- item #10: case_id (the shared cross-server correlation key) is capped at 512, aligned with siblings ---
@@ -430,7 +472,7 @@ def test_manifest_count_migration_from_precount(tmp_path):
             continue
         e = json.loads(ln)
         payload = {"table": e["table"], "head": e["head"], "at": e["at"]}  # NO "count"
-        mh = _row_hash(prev, payload)
+        mh = row_hash(prev, payload)
         out.append(json.dumps({**payload, "prev_manifest_hash": prev, "manifest_hash": mh}))
         prev = mh
     mp.write_text("\n".join(out) + "\n")
@@ -445,5 +487,42 @@ def test_manifest_count_migration_from_precount(tmp_path):
         assert (
             b.verify_chain().ok is True
         )  # WITHOUT the fallback: a FALSE tamper (manifest 1 vs table 3 rows)
+    finally:
+        b.close()
+
+
+def test_manifest_precount_still_catches_truncation(tmp_path):
+    # Companion (adversarial): the count-tolerant fallback must NOT become a truncation bypass. A pre-count
+    # format manifest + a real trailing-row DELETE must still fail closed — the manifest's attested head +
+    # line-count for the table no longer match the shortened live chain.
+    db = str(tmp_path / "cal.db")
+    a = CalibrationStore(db, analyst_id="m")
+    try:
+        _log(a, q="q1")
+        _log(a, q="q2")
+        assert a.verify_chain().ok is True
+    finally:
+        a.close()
+    mp = tmp_path / "cal.db.manifest.jsonl"
+    prev = GENESIS
+    out: list[str] = []
+    for ln in mp.read_text().splitlines():
+        if not ln.strip():
+            continue
+        e = json.loads(ln)
+        payload = {"table": e["table"], "head": e["head"], "at": e["at"]}  # NO "count"
+        mh = row_hash(prev, payload)
+        out.append(json.dumps({**payload, "prev_manifest_hash": prev, "manifest_hash": mh}))
+        prev = mh
+    mp.write_text("\n".join(out) + "\n")
+    # tamper: delete the trailing forecasts row directly (the attack the manifest exists to catch)
+    raw = sqlite3.connect(db)
+    raw.execute("DELETE FROM forecasts WHERE seq=(SELECT MAX(seq) FROM forecasts)")
+    raw.commit()
+    raw.close()
+    b = CalibrationStore(db, analyst_id="m")
+    try:
+        s = b.verify_chain()
+        assert s.ok is False and s.mismatch.table == "forecasts"
     finally:
         b.close()

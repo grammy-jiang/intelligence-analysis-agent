@@ -14,9 +14,9 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
+from ..common import ChainStatus, verify_stable
 from .models import (
     CalibrationReport,
-    ChainStatus,
     ForecastList,
     ForecastRecord,
 )
@@ -157,7 +157,9 @@ def get_forecast(
         str, Field(max_length=200, description="The forecast_id returned by log_forecast.")
     ],
 ) -> ForecastRecord:
-    """Read one forecast (with its effective outcome / voided status)."""
+    """Read one forecast (with its effective outcome / voided status). Scoped to this server's bound
+    analyst_id (a trusted local binding); a forecast logged under a different identity on a shared DB file
+    reads as not-found."""
     try:
         return store.get_forecast(forecast_id)
     except ForecastError as e:
@@ -184,7 +186,9 @@ def list_forecasts(
         ),
     ] = None,
 ) -> ForecastList:
-    """Read-back with filters + pagination. Pass the returned `next_cursor` back as `cursor` for the next page."""
+    """Read-back with filters + pagination. Pass the returned `next_cursor` back as `cursor` for the next
+    page. Scoped to this server's bound analyst_id — forecasts logged under a different identity on a shared
+    DB file are not returned."""
     try:
         return store.list_forecasts(case_id, resolved, limit, cursor)
     except ForecastError as e:
@@ -201,13 +205,15 @@ def get_calibration_report(
     ] = None,
 ) -> CalibrationReport:
     """COMPUTE Brier + a calibration table + Murphy resolution/reliability over analyst_confirmed, non-voided,
-    resolved forecasts. Read-only; no judgment invented.
+    resolved forecasts. Read-only; no judgment invented. Scoped to this server's bound analyst_id — forecasts
+    logged under a different identity on a shared DB file are excluded.
 
     Also returns three ADVISORY hindsight-audit signals (never correctness failures; nothing is excluded from
     scoring): `resolved_before_horizon` (resolved strictly before a parseable ISO-date horizon) together with
     its coverage `n_horizon_checked` / `n_horizon_skipped`, and `resolved_within_min_latency` (resolved within
-    24h of the SERVER-authored locked_at — the ungameable companion that catches same-day / duration-horizon
-    cases the horizon signal misses). Treat all three as review prompts, not failures."""
+    24h of the SERVER-authored locked_at, where the horizon signal could not certify the timing — a companion
+    that catches same-day / duration-horizon cases the horizon signal misses; harder to game, not ungameable).
+    Treat all three as review prompts, not failures. Material coverage gaps or flag rates also surface in `note`."""
     try:
         return store.get_calibration_report(case_id)
     except ForecastError as e:
@@ -217,7 +223,12 @@ def get_calibration_report(
 @mcp.tool
 def verify_chain() -> ChainStatus:
     """Verify the append-only hash chains + the external manifest (tamper / whole-chain-deletion evidence).
-    Integrity is table-wide by construction; it cannot be scoped to a single case (scope is always 'all')."""
+    Integrity is table-wide by construction; it cannot be scoped to a single case (scope is always 'all').
+
+    NOTE: this is an UNKEYED SHA-256 hash chain — tamper-evidence rests entirely on OS file-permission
+    isolation of the DB + manifest (kept 0600) from any other local writer, INCLUDING a co-resident agent
+    with a filesystem/bash tool; it is NOT protection against an actor who can rewrite the files and
+    recompute the chain forward."""
     try:
         return store.verify_chain()
     except ForecastError as e:
@@ -225,7 +236,9 @@ def verify_chain() -> ChainStatus:
 
 
 def main() -> None:
-    status = store.verify_chain()
+    # verify_stable tolerates the benign cross-process commit -> manifest-append window (retry) while still
+    # failing closed on genuine tampering.
+    status = verify_stable(store.verify_chain)
     if not status.ok:
         print(
             f"[calibration-tracker] REFUSING TO SERVE — chain verify failed: {status.mismatch}",

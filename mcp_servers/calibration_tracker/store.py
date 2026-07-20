@@ -11,45 +11,28 @@ All VALUES use bound parameters; only internal table-name literals are ever inte
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import io
-import json
 import os
 import sqlite3
 import threading
 import time
 import uuid
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
-from ..common import Manifest
+from ..common import GENESIS, ChainMismatch, ChainStatus, Manifest, now_iso, row_hash
 from .models import (
     Bucket,
     CalibrationReport,
-    ChainMismatch,
-    ChainStatus,
     ForecastList,
     ForecastRecord,
 )
 
-GENESIS = "0" * 64
 IDEMPOTENCY_WINDOW_S = 5.0
 _TABLES = ("forecasts", "resolutions", "voids")
 
 
 class ForecastError(Exception):
     """Business-rule violation; the server layer wraps this as a FastMCP ToolError."""
-
-
-def _canon(payload: dict) -> str:
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _row_hash(prev_hash: str, payload: dict) -> str:
-    return hashlib.sha256((prev_hash + _canon(payload)).encode("utf-8")).hexdigest()
-
-
-def _now_iso() -> str:
-    return datetime.now(UTC).isoformat()
 
 
 # Free-text field caps (S5): bound every string that lands in the hash-chained ledger so a single
@@ -60,12 +43,21 @@ MAX_ID = 512
 MAX_SHORT = 500
 MAX_TEXT = 4000
 
-# Advisory hindsight heuristic (M3, the ungameable half): a resolution logged less than this long after the
-# SERVER-AUTHORED locked_at is flagged (resolved_within_min_latency) as a possible log-then-immediately-
-# self-grade with hindsight. Unlike the horizon-keyed signal, the anchor (locked_at) is NOT analyst-
-# controllable, so it catches the honest same-day / ISO-duration-horizon case the horizon comparison misses.
-# Advisory only — early resolution is legitimate and nothing is excluded from scoring.
+# Advisory hindsight heuristic (harder to game, NOT ungameable): a resolution logged less than this long
+# after the SERVER-AUTHORED locked_at is flagged (resolved_within_min_latency) as a possible
+# log-then-immediately-self-grade with hindsight. Two anchors now bound it — locked_at is server-authored
+# (not analyst-controllable) and resolved_at is bounded to real time (see _MAX_RESOLVED_AT_SKEW_S), so the
+# gap cannot be inflated by asserting a far-future resolved_at. RESIDUAL: an analyst who already knows the
+# outcome can still WAIT OUT this window in real time before self-grading — real enforcement is procedural
+# (the calling skill/analyst). It catches the same-day / ISO-duration-horizon case the horizon signal misses;
+# advisory only — early resolution is legitimate and nothing is excluded from scoring.
 _MIN_RESOLUTION_LATENCY_S = 86400  # 24h
+
+# resolved_at is analyst-asserted; bound it to the server clock on BOTH ends. The lower bound (>= locked_at)
+# blocks backdating; this upper bound blocks forward-dating — without it an analyst who already knows the
+# outcome could assert a far-future resolved_at to inflate the locked_at -> resolved_at gap past
+# _MIN_RESOLUTION_LATENCY_S and slip past the hindsight flag. A few minutes' tolerance absorbs clock drift.
+_MAX_RESOLVED_AT_SKEW_S = 300  # 5 min
 
 
 def _parse_iso(value: str) -> datetime:
@@ -233,7 +225,7 @@ class CalibrationStore:
                 return self.get_forecast(existing["forecast_id"])
 
             forecast_id = uuid.uuid4().hex
-            locked_at = _now_iso()
+            locked_at = now_iso()
             payload = {
                 "forecast_id": forecast_id,
                 "case_id": case_id,
@@ -250,7 +242,7 @@ class CalibrationStore:
                 "created_ts": now,
             }
             prev = self._head("forecasts")
-            rh = _row_hash(prev, payload)
+            rh = row_hash(prev, payload)
             # S1: on a failed execute, roll back so a dangling open transaction cannot be smuggled into
             # the append-only ledger by the next successful commit.
             try:
@@ -322,6 +314,17 @@ class CalibrationStore:
             raise ForecastError(
                 f"resolved_at must be ISO-8601 (e.g. 2026-01-31 or 2026-01-31T12:00:00Z): {e}"
             )
+        # M1-upper (anti-forward-dating): resolved_at cannot be in the server's FUTURE beyond a small
+        # clock-skew tolerance. Without this an analyst who already knows the outcome could assert a
+        # far-future resolved_at to inflate the locked_at -> resolved_at gap past _MIN_RESOLUTION_LATENCY_S
+        # and slip past the hindsight flag. The lower bound (resolved_at >= locked_at) is checked under the
+        # lock below; this upper bound needs no chain state, so it is pure input validation here.
+        now_dt = datetime.now(UTC)
+        if resolved_dt > now_dt + timedelta(seconds=_MAX_RESOLVED_AT_SKEW_S):
+            raise ForecastError(
+                f"resolved_at ({resolved_at}) is in the future (server now={now_dt.isoformat()}); a forecast "
+                f"cannot resolve ahead of real time (max {_MAX_RESOLVED_AT_SKEW_S}s clock-skew tolerance)."
+            )
 
         # M1 (TOCTOU): the single-resolution decision (does a prior resolution already exist?) and the
         # head-read + INSERT MUST be one atomic critical section. Reading `_latest_resolution` OUTSIDE the lock
@@ -366,7 +369,7 @@ class CalibrationStore:
                 "reason": reason,
             }
             prev = self._head("resolutions")
-            rh = _row_hash(prev, payload)
+            rh = row_hash(prev, payload)
             try:  # S1: roll back a failed execute so no partial transaction survives to the next commit.
                 self._conn.execute(
                     "INSERT INTO resolutions(forecast_id, outcome, resolved_at, is_correction, reason, prev_hash, "
@@ -405,9 +408,9 @@ class CalibrationStore:
                 )
             if self._is_voided(forecast_id):
                 raise ForecastError("forecast already voided.")
-            payload = {"forecast_id": forecast_id, "reason": reason, "at": _now_iso()}
+            payload = {"forecast_id": forecast_id, "reason": reason, "at": now_iso()}
             prev = self._head("voids")
-            rh = _row_hash(prev, payload)
+            rh = row_hash(prev, payload)
             try:  # S1: roll back a failed execute so no partial transaction survives to the next commit.
                 self._conn.execute(
                     "INSERT INTO voids(forecast_id, reason, at, prev_hash, row_hash) VALUES(?,?,?,?,?)",
@@ -523,26 +526,36 @@ class CalibrationStore:
                 #     (S5) and ANALYST-authored, so a non-date ("end of Q2"), an ISO-8601 DURATION ("P30D"), or a
                 #     same-day date does not flag — n_horizon_checked/skipped disclose that coverage so
                 #     resolved_before_horizon=0 cannot be misread as "no risk" when it means "no parseable horizon".
-                # (2) LATENCY-keyed: resolved within _MIN_RESOLUTION_LATENCY_S of the SERVER-authored locked_at.
-                #     The anchor is not analyst-controllable, so this catches the honest log-then-immediately-
-                #     self-grade case signal (1) misses. Still advisory (an actor can assert a late resolved_at,
-                #     but that then lives on the hash-chained record).
+                # (2) LATENCY-keyed: resolved within _MIN_RESOLUTION_LATENCY_S of the SERVER-authored locked_at,
+                #     but ONLY where signal (1) could not certify on-schedule resolution (Cal-C gate below).
+                #     locked_at is not analyst-controllable and resolved_at is bounded to real time (M1-upper),
+                #     so this catches the log-then-immediately-self-grade case signal (1) misses. Residual: an
+                #     analyst can still wait out the window in real time before self-grading a known outcome.
+                horizon_parseable = False
+                resolved_before_this = False
                 try:
                     if _parse_iso(res["resolved_at"]) < _parse_iso(r["horizon"]):
                         resolved_before_horizon += 1
+                        resolved_before_this = True
                     n_horizon_checked += 1
+                    horizon_parseable = True
                 except ValueError:
                     n_horizon_skipped += (
                         1  # non-date horizon (free-form OR ISO-8601 duration) — no signal
                     )
-                try:
-                    gap = (
-                        _parse_iso(res["resolved_at"]) - _parse_iso(r["locked_at"])
-                    ).total_seconds()
-                    if gap < _MIN_RESOLUTION_LATENCY_S:
-                        resolved_within_min_latency += 1
-                except ValueError:
-                    pass  # locked_at is server-authored ISO; guard defensively, never fatal
+                # Cal-C: fire the latency flag ONLY where the horizon signal could not vouch for the timing —
+                # an unparseable horizon, or a resolution that also landed before its horizon. A parseable
+                # horizon the resolution reached on/after is already certified on-schedule by signal (1); also
+                # flagging latency there would mark a normal short-fuse (e.g. next-day) forecast as hindsight.
+                if (not horizon_parseable) or resolved_before_this:
+                    try:
+                        gap = (
+                            _parse_iso(res["resolved_at"]) - _parse_iso(r["locked_at"])
+                        ).total_seconds()
+                        if gap < _MIN_RESOLUTION_LATENCY_S:
+                            resolved_within_min_latency += 1
+                    except ValueError:
+                        pass  # locked_at is server-authored ISO; guard defensively, never fatal
         n_voided = self._conn.execute(
             "SELECT COUNT(*) c FROM voids v JOIN forecasts f ON f.forecast_id=v.forecast_id "  # noqa: S608 - literal fragments only; all values bound with ?
             "WHERE f.judgment_source='analyst_confirmed' AND f.analyst_id=? "
@@ -587,6 +600,18 @@ class CalibrationStore:
                 buckets.append(Bucket(p_range=f"{lo:.1f}-{hi:.1f}", n=0, observed_freq=None))
         reliability /= n
         resolution /= n
+        # Cal-D: fold coverage/flag rates into the headline `note` (the field a consumer checks for caveats),
+        # not only the sample size — so a report that is Brier-clean but hindsight-blind (every horizon
+        # unparseable) or heavy on fast self-grades cannot read as unqualified.
+        notes: list[str] = []
+        if n < 10:
+            notes.append("n<10")
+        if n_horizon_skipped:
+            notes.append(f"{n_horizon_skipped}/{n} horizon-unparseable (hindsight check skipped)")
+        if resolved_within_min_latency:
+            notes.append(
+                f"{resolved_within_min_latency}/{n} resolved <24h post-lock (possible hindsight)"
+            )
         return CalibrationReport(
             n=n,
             n_voided=n_voided,
@@ -599,7 +624,7 @@ class CalibrationStore:
             buckets=buckets,
             resolution_component=round(resolution, 6),
             reliability_component=round(reliability, 6),
-            note=("n<10" if n < 10 else ""),
+            note="; ".join(notes),
         )
 
     # ---- integrity ---------------------------------------------------------
@@ -623,7 +648,7 @@ class CalibrationStore:
                 ).fetchall()
                 for r in rows:
                     payload = self._payload_for(table, r)
-                    expected = _row_hash(prev, payload)
+                    expected = row_hash(prev, payload)
                     if expected != r["row_hash"] or r["prev_hash"] != prev:
                         return ChainStatus(
                             server="calibration-tracker",

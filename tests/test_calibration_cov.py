@@ -67,9 +67,10 @@ def test_server_log_forecast_error_wraps_toolerror():
 
 
 def test_server_resolve_forecast_error_wraps_toolerror():
-    # server.py 130-131: unknown forecast_id -> ForecastError -> ToolError.
+    # server.py 130-131: unknown forecast_id -> ForecastError -> ToolError. resolved_at is a valid PAST date
+    # (M1 rejects future dates before the lookup), so the not-found path is what surfaces.
     with pytest.raises(ToolError, match="unknown forecast_id"):
-        srv.resolve_forecast("nope", True, "2030-01-01")
+        srv.resolve_forecast("nope", True, "2020-01-01")
 
 
 def test_server_void_forecast_success_and_error():

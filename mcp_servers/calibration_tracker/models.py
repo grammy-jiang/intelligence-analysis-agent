@@ -74,7 +74,8 @@ class CalibrationReport(BaseModel):
             "review of possible premature/hindsight resolution. Early resolution is legitimate (an outcome "
             "can be known before the stated deadline). A non-date horizon — free-form ('end of Q2') OR an "
             "ISO-8601 DURATION ('P30D') — is skipped (see n_horizon_checked/n_horizon_skipped for coverage; "
-            "resolved_within_min_latency is the ungameable locked_at-anchored companion signal)."
+            "resolved_within_min_latency is the locked_at-anchored companion signal — harder to game, not "
+            "ungameable)."
         ),
     )
     n_horizon_checked: int = Field(
@@ -96,8 +97,11 @@ class CalibrationReport(BaseModel):
         default=0,
         description=(
             "ADVISORY audit signal keyed to the SERVER-authored locked_at (not the analyst-authored horizon): "
-            "count of forecasts resolved within 24h of being locked — flags the log-then-immediately-self-grade "
-            "hindsight pattern the horizon signal misses. Advisory, not a gate; early resolution is legitimate."
+            "count of forecasts resolved within 24h of lock WHERE the horizon signal could not certify the "
+            "timing (unparseable horizon, or resolved before horizon) — flags the log-then-immediately-self-"
+            "grade pattern the horizon signal misses, without flagging a normal short-fuse forecast. resolved_at "
+            "is bounded to real time (anti-forward-dating) so the gap is real; residual: an analyst can still "
+            "wait out the window before self-grading. Advisory, not a gate; early resolution is legitimate."
         ),
     )
     brier: float | None
@@ -111,19 +115,3 @@ class CalibrationReport(BaseModel):
         description="Murphy reliability component; lower = better calibrated.",
     )
     note: str
-
-
-class ChainMismatch(BaseModel):
-    table: str
-    row_id: str
-    expected_hash: str
-    got_hash: str
-
-
-class ChainStatus(BaseModel):
-    server: str
-    scope: str
-    ok: bool
-    head_hash: dict[str, str]
-    rows_verified: int
-    mismatch: ChainMismatch | None = None
