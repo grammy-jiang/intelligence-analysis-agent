@@ -49,13 +49,23 @@ jobs:
   mermaid:
     name: Mermaid diagrams compile (mermaid-cli)
     runs-on: ubuntu-latest
+    env:
+      # Pinned so the Puppeteer browser-cache key is stable; bump to refresh the browser.
+      MERMAID_CLI_VERSION: "11.16.0"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
+      - name: Cache the Puppeteer/Chromium download
+        uses: actions/cache@v6
+        with:
+          # mermaid-cli's Puppeteer downloads Chromium here on install; on a cache
+          # hit the postinstall finds it and skips the ~hundreds-of-MB download.
+          path: ~/.cache/puppeteer
+          key: puppeteer-${{ runner.os }}-mermaid-cli-${{ env.MERMAID_CLI_VERSION }}
       - name: Install mermaid-cli
-        run: npm install -g @mermaid-js/mermaid-cli@11
+        run: npm install -g "@mermaid-js/mermaid-cli@${MERMAID_CLI_VERSION}"
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
