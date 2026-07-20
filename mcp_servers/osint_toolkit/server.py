@@ -18,7 +18,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from ..common import ChainStatus
+from ..common import ChainStatus, verify_stable
 from .artifacts import ArtifactError, ArtifactStore
 from .audit import EgressAudit
 from .egress import EgressError, validate_url
@@ -417,7 +417,9 @@ def _ledger_url_is_local(url: str) -> bool:
 
 
 def main() -> None:
-    st = audit.verify_chain()
+    # verify_stable tolerates a benign cross-process commit -> manifest-append window (retry) while still
+    # failing closed on genuine tampering; uniform with the other servers' boot gates.
+    st = verify_stable(audit.verify_chain)
     if not st.ok:
         print(
             f"[osint-toolkit] REFUSING TO SERVE — egress audit chain failed: {st.mismatch}",

@@ -10,7 +10,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from ..common import ChainStatus
+from ..common import ChainStatus, verify_stable
 from ..staleness import StalenessStore
 from .models import (
     Credibility,
@@ -232,7 +232,12 @@ def get_source_history(
 def verify_chain() -> ChainStatus:
     """Verify the append-only evidence + grade hash chains AND anchor each to the external manifest (tamper
     evidence, incl. tail-truncation / whole-chain reset). Verification is ALWAYS GLOBAL — the whole ledger,
-    not a single case. See verify_signals_chain for the SEPARATE cross-server signal store."""
+    not a single case. See verify_signals_chain for the SEPARATE cross-server signal store.
+
+    NOTE: this is an UNKEYED SHA-256 hash chain — tamper-evidence rests entirely on OS file-permission
+    isolation of the DB + manifest (kept 0600) from any other local writer, INCLUDING a co-resident agent
+    with a filesystem/bash tool; it is NOT protection against an actor who can rewrite the files and
+    recompute the chain forward."""
     return store.verify_chain()
 
 
@@ -245,10 +250,13 @@ def verify_signals_chain() -> ChainStatus:
 
 
 def main() -> None:
-    for label, st in (
-        ("evidence-ledger", store.verify_chain()),
-        ("evidence-signals", staleness.verify_chain()),
+    # verify_stable tolerates the benign cross-process commit -> manifest-append window on the SHARED
+    # staleness store (retry) while still failing closed on genuine tampering.
+    for label, fn in (
+        ("evidence-ledger", store.verify_chain),
+        ("evidence-signals", staleness.verify_chain),
     ):
+        st = verify_stable(fn)
         if not st.ok:
             print(
                 f"[evidence-ledger] REFUSING TO SERVE — {label} chain failed: {st.mismatch}",
