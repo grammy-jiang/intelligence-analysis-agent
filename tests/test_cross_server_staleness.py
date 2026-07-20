@@ -147,3 +147,83 @@ def test_signals_chain_missing_manifest_fails_closed(tmp_path):
         assert s.ok is False and s.mismatch.row_id == "<manifest-missing>"
     finally:
         st.close()
+
+
+def _tamper_delete_last_grade_signal(db_path: str) -> None:
+    raw = sqlite3.connect(db_path)
+    raw.execute("DELETE FROM grade_signals WHERE seq=(SELECT MAX(seq) FROM grade_signals)")
+    raw.commit()
+    raw.close()
+
+
+def test_score_matrix_rejects_tampered_signal_store(tmp_path):
+    """S2: score_matrix reads latest_grade_source straight from the shared staleness store, which is otherwise
+    only integrity-checked at process startup. A mid-session tamper of grade_signals must make score_matrix
+    REFUSE (it re-verifies the chain on the hot path), not silently trust a forged collect-then-grade gate."""
+    clk = Clock()
+    db = str(tmp_path / "stale.db")
+    st = StalenessStore(db, clock=clk)
+    ach = ACHStore(str(tmp_path / "ach.db"), st, analyst_id="t", clock=clk)
+    try:
+        ref = ach.create_matrix("c", ["H1", "H2"])
+        h1, h2 = ref.hypotheses[0].hypothesis_id, ref.hypotheses[1].hypothesis_id
+        st.mark_graded("E1", "analyst_confirmed")
+        ach.rate_cell(ref.matrix_id, "E1", h1, "I", "strong", "analyst_confirmed")
+        ach.rate_cell(ref.matrix_id, "E1", h2, "C", "weak", "analyst_confirmed")
+        assert ach.score_matrix(ref.matrix_id).leading is not None  # healthy signal store -> scores
+
+        _tamper_delete_last_grade_signal(db)  # forge the gate by erasing the grade signal
+        with pytest.raises(ACHError, match="integrity check"):
+            ach.score_matrix(ref.matrix_id)
+    finally:
+        ach.close()
+        st.close()
+
+
+def test_rate_cell_confirmed_rejects_tampered_signal_store(tmp_path):
+    """S2: rate_cell(analyst_confirmed) also leans on the shared grade signal; a tampered signal store must
+    make it refuse up front rather than record a rating backed by a possibly-forged grade."""
+    clk = Clock()
+    db = str(tmp_path / "stale.db")
+    st = StalenessStore(db, clock=clk)
+    ach = ACHStore(str(tmp_path / "ach.db"), st, analyst_id="t", clock=clk)
+    try:
+        ref = ach.create_matrix("c", ["H1"])
+        h1 = ref.hypotheses[0].hypothesis_id
+        st.mark_graded("E1", "analyst_confirmed")
+        _tamper_delete_last_grade_signal(db)
+        with pytest.raises(ACHError, match="integrity check"):
+            ach.rate_cell(ref.matrix_id, "E1", h1, "I", "strong", "analyst_confirmed")
+    finally:
+        ach.close()
+        st.close()
+
+
+def test_get_matrix_surfaces_supersede_history(tmp_path):
+    """M5: get_matrix is the human gate before score_matrix, so it must reveal a confirm-then-re-rate — the
+    effective cell's `superseded` flag + its `reason` — not only the final effective values."""
+    clk = Clock()
+    st = StalenessStore(str(tmp_path / "stale.db"), clock=clk)
+    ach = ACHStore(str(tmp_path / "ach.db"), st, analyst_id="t", clock=clk)
+    try:
+        ref = ach.create_matrix("c", ["H1"])
+        h1 = ref.hypotheses[0].hypothesis_id
+        st.mark_graded("E1", "analyst_confirmed")
+        ach.rate_cell(ref.matrix_id, "E1", h1, "C", "weak", "analyst_confirmed")
+        first = {(c.evidence_id, c.hypothesis_id): c for c in ach.get_matrix(ref.matrix_id).cells}[
+            ("E1", h1)
+        ]
+        assert first.superseded is False and first.reason == ""  # a single rating, not re-rated
+
+        # re-rate the SAME cell (a confirm-then-re-rate) with a reason
+        ach.rate_cell(
+            ref.matrix_id, "E1", h1, "I", "strong", "analyst_confirmed", reason="new read"
+        )
+        eff = {(c.evidence_id, c.hypothesis_id): c for c in ach.get_matrix(ref.matrix_id).cells}[
+            ("E1", h1)
+        ]
+        assert eff.superseded is True and eff.reason == "new read"  # the re-rate is now visible
+        assert eff.consistency == "I"  # and the effective value is the latest rating
+    finally:
+        ach.close()
+        st.close()

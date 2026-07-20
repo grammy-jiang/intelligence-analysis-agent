@@ -13,7 +13,7 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from pydantic import Field
 
-from ..common import ChainStatus
+from ..common import ChainStatus, verify_stable
 from ..staleness import StalenessStore
 from .models import (
     CellRecord,
@@ -72,11 +72,13 @@ item carries an out-of-band `analyst_confirmed` grade in evidence-ledger, AND no
 self-attestable on a rating — record an agent's own read as `model_draft` and confirm the evidence
 in evidence-ledger.
 
-Integrity: verify_chain checks the append-only chains reconciled against a manifest (tail-truncation
-evidence); it is ALWAYS GLOBAL. NOTE: this is an UNKEYED SHA-256 hash chain — its tamper-evidence
-rests entirely on OS file-permission isolation of the DB + manifest (kept 0600) from any other local
-writer, INCLUDING a co-resident agent that also holds a filesystem/bash tool. It is NOT protection
-against an actor who can rewrite the files and recompute the chain forward.
+Integrity: verify_chain checks THIS server's own append-only chains (matrices/hypotheses/cells) reconciled
+against a manifest (tail-truncation evidence). It does NOT cover the shared staleness / grade-signal store
+the scoring gate depends on — verify_signals_chain does that (and score_matrix re-checks it automatically
+before it trusts the gate). NOTE: this is an UNKEYED SHA-256 hash chain — its tamper-evidence rests entirely
+on OS file-permission isolation of the DB + manifest (kept 0600) from any other local writer, INCLUDING a
+co-resident agent that also holds a filesystem/bash tool. It is NOT protection against an actor who can
+rewrite the files and recompute the chain forward.
 
 No network egress."""
 
@@ -264,17 +266,32 @@ def list_matrices(
 @mcp.tool
 @_translate_ach_errors
 def verify_chain() -> ChainStatus:
-    """Verify the append-only hash chains (tamper evidence), reconciled against the manifest so
-    trailing-row truncation is detected. Verification is ALWAYS GLOBAL (the whole store, never a single
-    case). STOP and escalate if the result has ok=False."""
+    """Verify THIS server's append-only hash chains (matrices, hypotheses, cells), reconciled against the
+    manifest so trailing-row truncation is detected — global across this server's own tables. It does NOT
+    cover the shared staleness / grade-signal store that score_matrix's analyst_confirmed gate depends on;
+    use verify_signals_chain for that. STOP and escalate if the result has ok=False."""
     return store.verify_chain()
 
 
+@mcp.tool
+@_translate_ach_errors
+def verify_signals_chain() -> ChainStatus:
+    """Verify the SHARED staleness / grade-signal store (stale_events + grade_signals) whose
+    latest_grade_source drives score_matrix's collect-then-grade + staleness gate. A DIFFERENT store from
+    verify_chain (which walks only this server's own tables). score_matrix already re-checks this store
+    automatically before it trusts the gate; call this to audit it on demand. STOP and escalate if ok=False —
+    a tampered signal store can forge the analyst_confirmed gate."""
+    return staleness.verify_chain()
+
+
 def main() -> None:
-    for label, st in (
-        ("ach-engine", store.verify_chain()),
-        ("evidence-signals", staleness.verify_chain()),
+    # verify_stable tolerates the benign cross-process commit -> manifest-append window on the SHARED
+    # staleness store (retry) while still failing closed on genuine tampering.
+    for label, fn in (
+        ("ach-engine", store.verify_chain),
+        ("evidence-signals", staleness.verify_chain),
     ):
+        st = verify_stable(fn)
         if not st.ok:
             print(
                 f"[ach-engine] REFUSING TO SERVE — {label} chain failed: {st.mismatch}",

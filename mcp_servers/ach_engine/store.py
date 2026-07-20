@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Callable
 from typing import cast
 
-from ..common import GENESIS, ChainMismatch, ChainStatus, Manifest, now_iso, row_hash
+from ..common import GENESIS, ChainMismatch, ChainStatus, Manifest, now_iso, row_hash, verify_stable
 from ..staleness import StalenessStore
 from .models import (
     Cell,
@@ -280,15 +280,23 @@ class ACHStore:
         # score_matrix tool docs, and the HUMAN GATE (review get_matrix before score_matrix) is the control. A
         # per-cell confirm token was considered and DEFERRED: over stdio it stays caller-asserted, so it would
         # add auditability, not true verification (same honest limit as judgment_source / the calibration horizon).
-        if (
-            judgment_source == "analyst_confirmed"
-            and self.staleness.latest_grade_source(evidence_id) != "analyst_confirmed"
-        ):
-            raise ACHError(
-                "cannot record an analyst_confirmed cell rating for evidence that is not itself "
-                "analyst_confirmed-graded in evidence-ledger (out-of-band confirmation required): "
-                "grade the evidence first, or record this rating as model_draft."
-            )
+        if judgment_source == "analyst_confirmed":
+            # S2: this branch trusts latest_grade_source from the shared staleness store; re-verify its chain
+            # first (verify_stable tolerates the benign cross-process append window, fails closed on real
+            # tampering) so a mid-session tamper cannot forge the analyst_confirmed grade this rating leans on.
+            sig = verify_stable(self.staleness.verify_chain)
+            if not sig.ok:
+                raise ACHError(
+                    "cannot record an analyst_confirmed rating — the shared staleness / grade-signal store "
+                    f"failed its integrity check (mismatch: {sig.mismatch}); run verify_signals_chain and "
+                    "restore the store from its manifest first."
+                )
+            if self.staleness.latest_grade_source(evidence_id) != "analyst_confirmed":
+                raise ACHError(
+                    "cannot record an analyst_confirmed cell rating for evidence that is not itself "
+                    "analyst_confirmed-graded in evidence-ledger (out-of-band confirmation required): "
+                    "grade the evidence first, or record this rating as model_draft."
+                )
         rated_at = now_iso()
         rated_ts = self._clock()
         # M1: rated_ts is in the hashed payload — it drives _cell_stale and the score_matrix staleness
@@ -369,6 +377,17 @@ class ACHStore:
 
     def get_matrix(self, matrix_id: str) -> Matrix:
         r = self._matrix_row(matrix_id)
+        # M5: a cell is "superseded" if MORE than one rating row exists for its (evidence, hypothesis) pair —
+        # i.e. it was re-rated at least once. get_matrix is the human gate before score_matrix, so it must
+        # surface a confirm-then-re-rate (count > 1) + the effective reason, not just the final values.
+        rerate_counts = {
+            (row["evidence_id"], row["hypothesis_id"]): row["c"]
+            for row in self._conn.execute(
+                "SELECT evidence_id, hypothesis_id, COUNT(*) c FROM cells WHERE matrix_id=? "
+                "GROUP BY evidence_id, hypothesis_id",
+                (matrix_id,),
+            ).fetchall()
+        }
         cells: list[Cell] = []
         for c in self._effective_cells(matrix_id):
             stale = self._cell_stale(c)  # best-effort; score_matrix is authoritative
@@ -379,6 +398,8 @@ class ACHStore:
                     consistency=c["consistency"],
                     strength=c["strength"],
                     judgment_source=c["judgment_source"],
+                    reason=c["reason"],
+                    superseded=rerate_counts.get((c["evidence_id"], c["hypothesis_id"]), 1) > 1,
                     stale=stale,
                     stale_reason=(
                         self.staleness.changed_field(c["evidence_id"]) if stale else None
@@ -395,6 +416,19 @@ class ACHStore:
 
     def score_matrix(self, matrix_id: str) -> Ranking:
         self._matrix_row(matrix_id)
+        # S2: the analyst_confirmed / staleness gate below reads latest_grade_source straight from the shared
+        # staleness store, which is otherwise integrity-checked only at process startup — so a mid-session
+        # single-row tamper of grade_signals could flip the gate until the next restart. Re-verify the shared
+        # chain here (analyst-paced, not a hot loop) so the gate never trusts a tampered signal store.
+        # verify_stable tolerates the benign cross-process commit -> manifest-append window but still fails
+        # closed on real tampering (verify_signals_chain is the manual audit tool).
+        sig = verify_stable(self.staleness.verify_chain)
+        if not sig.ok:
+            raise ACHError(
+                "cannot score — the shared staleness / grade-signal store failed its integrity check "
+                f"(mismatch: {sig.mismatch}); refusing to trust the analyst_confirmed gate against a tampered "
+                "signal store. Run verify_signals_chain and restore the store from its manifest before scoring."
+            )
         eff = self._effective_cells(matrix_id)
         hyps = self._hypotheses(matrix_id)
         blockers: list[str] = []

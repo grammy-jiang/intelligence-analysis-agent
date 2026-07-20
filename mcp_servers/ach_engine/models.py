@@ -28,6 +28,11 @@ class Cell(BaseModel):
     consistency: Consistency
     strength: Strength
     judgment_source: JudgmentSource
+    # M5 (human-gate visibility): reason of the effective rating + whether this (evidence × hypothesis) cell
+    # was re-rated at least once. get_matrix is the human gate before score_matrix, so it must surface a
+    # confirm-then-re-rate, not only the final effective values.
+    reason: str = ""
+    superseded: bool = False
     stale: bool
     stale_reason: str | None = None
     rated_at: str
