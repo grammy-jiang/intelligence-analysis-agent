@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -41,6 +43,26 @@ class ChainStatus(BaseModel):
     mismatch: ChainMismatch | None = None
 
 
+def verify_stable(
+    verify_fn: Callable[[], ChainStatus], attempts: int = 3, delay: float = 0.05
+) -> ChainStatus:
+    """Call a store's verify_chain(), tolerating the benign cross-process commit -> manifest-append window.
+
+    A writer commits a row, then appends the manifest attestation as a SEPARATE fsync'd step (they cannot
+    share one transaction — different files). A verify from ANOTHER process that lands between the two sees a
+    table head/count one ahead of the manifest and reports a spurious mismatch. Such a race self-resolves
+    within one append, so retry a few times before trusting a mismatch; GENUINE tampering reproduces on every
+    attempt (the DB and manifest stay inconsistent), so the fail-closed guarantee is unchanged. Returns the
+    final ChainStatus. Used by the startup boot gates and by ach-engine's per-score staleness recheck."""
+    status = verify_fn()
+    for _ in range(max(0, attempts - 1)):
+        if status.ok:
+            break
+        time.sleep(delay)
+        status = verify_fn()
+    return status
+
+
 class ManifestMismatch(NamedTuple):
     """A manifest reconciliation failure. Each store wraps it into its own ChainMismatch model (common's or
     a per-package duplicate), so the Manifest helper stays decoupled from any specific pydantic model."""
@@ -64,8 +86,10 @@ class Manifest:
     Each line's manifest_hash chains to the previous line's, so a NON-TERMINAL line cannot be edited or
     dropped undetected; `count` (the monotonic per-table append count) is inside the hashed payload.
 
-    Residual (documented): the manifest shares the DB's trust domain, so an actor with filesystem write can
-    recompute the whole self-chain in lockstep — durable tamper-evidence needs these heads shipped to an
+    Residual (documented): the manifest shares the DB's trust domain. A trailing-row TRUNCATION needs NO
+    recomputation — dropping a chain's tail leaves every earlier line self-consistent — so an actor with
+    filesystem write to BOTH the DB and this file can truncate them in lockstep undetected (a mid-chain edit,
+    by contrast, must recompute every following line). Durable tamper-evidence needs these heads shipped to an
     off-host append-only/WORM log. The OWNING STORE keeps its own write-lock around commit -> append and
     around its verify walk, so this class is not independently thread-safe by design.
     """
