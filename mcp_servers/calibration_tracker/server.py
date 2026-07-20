@@ -98,7 +98,8 @@ def resolve_forecast(
     resolved_at: Annotated[
         str,
         Field(
-            description="ISO-8601 date/datetime the outcome was known; must be >= the forecast's locked_at."
+            description="ISO-8601 date/datetime the outcome was known; must be >= the forecast's locked_at "
+            "and not in the server's future (a few minutes' clock-skew tolerance)."
         ),
     ],
     is_correction: Annotated[
@@ -116,8 +117,10 @@ def resolve_forecast(
 
     Trust model (like judgment_source: the server records the analyst's resolution faithfully; it does not,
     and over stdio cannot, verify the world). The HARD, server-enforced anti-hindsight controls are: the
-    forecast's question+probability are IMMUTABLE once locked and hash-chained, and `resolved_at` must be
-    >= the forecast's `locked_at` (anti-backdating). The forecast's `horizon` is ADVISORY metadata only —
+    forecast's question+probability are IMMUTABLE once locked and hash-chained, and `resolved_at` is bounded
+    on BOTH ends — >= the forecast's `locked_at` (anti-backdating) and no more than a few minutes past the
+    server clock (anti-forward-dating); together these are what make get_calibration_report's hindsight-latency
+    signal harder to game, not just the lower bound. The forecast's `horizon` is ADVISORY metadata only —
     free-form text, NOT a machine-enforced gate: early resolution is legitimate (an outcome can be known
     before the stated deadline), so the server does NOT block a `resolved_at` that precedes the horizon; it
     merely counts such cases in get_calibration_report.resolved_before_horizon for human review. The
@@ -211,9 +214,10 @@ def get_calibration_report(
     Also returns three ADVISORY hindsight-audit signals (never correctness failures; nothing is excluded from
     scoring): `resolved_before_horizon` (resolved strictly before a parseable ISO-date horizon) together with
     its coverage `n_horizon_checked` / `n_horizon_skipped`, and `resolved_within_min_latency` (resolved within
-    24h of the SERVER-authored locked_at, where the horizon signal could not certify the timing — a companion
-    that catches same-day / duration-horizon cases the horizon signal misses; harder to game, not ungameable).
-    Treat all three as review prompts, not failures. Material coverage gaps or flag rates also surface in `note`."""
+    24h of the SERVER-authored locked_at, where the horizon could not certify the timing — unparseable,
+    pre-horizon, OR a horizon set under an hour past the lock — so a near-instant self-chosen horizon cannot
+    launder a fast self-grade; harder to game, not ungameable). Treat all three as review prompts, not
+    failures. Material coverage gaps or flag rates also surface in `note`."""
     try:
         return store.get_calibration_report(case_id)
     except ForecastError as e:

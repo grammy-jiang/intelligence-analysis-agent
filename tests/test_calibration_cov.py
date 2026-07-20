@@ -316,6 +316,25 @@ def test_report_tolerates_unparseable_locked_at(fstore):
     assert rep.n == 1  # still scored; only the advisory latency signal is disabled for this row
 
 
+def test_report_tolerates_corrupt_locked_at_when_resolved_after_horizon(fstore):
+    # store.py 566-567: when a resolution lands ON/AFTER a parseable horizon (the horizon would certify), the
+    # certifying floor recomputes horizon - locked_at; a corrupt server-authored locked_at is swallowed
+    # (horizon does not certify) rather than crashing the report. Uses a PAST horizon so the resolution is
+    # after it (the sibling test above exercises the resolved-BEFORE-horizon path instead).
+    ref = fstore.log_forecast("LKA", "q", 0.5, "def", "2000-01-01", "analyst_confirmed")
+    fstore.resolve_forecast(
+        ref.forecast_id, True, ref.locked_at
+    )  # resolved now, AFTER the 2000 horizon
+    fstore._conn.execute(
+        "UPDATE forecasts SET locked_at='garbage' WHERE forecast_id=?", (ref.forecast_id,)
+    )
+    fstore._conn.commit()
+    rep = fstore.get_calibration_report(case_id="LKA")
+    assert (
+        rep.n == 1
+    )  # still scored; the corrupt lock only disables the advisory latency/certify path
+
+
 def test_verify_chain_walks_void_rows(fstore):
     # store.py 693: verify_chain rebuilds the voids-table payload while walking the chain.
     ref = fstore.log_forecast("c", "q", 0.5, "def", "3mo", "analyst_confirmed")

@@ -45,13 +45,20 @@ MAX_TEXT = 4000
 
 # Advisory hindsight heuristic (harder to game, NOT ungameable): a resolution logged less than this long
 # after the SERVER-AUTHORED locked_at is flagged (resolved_within_min_latency) as a possible
-# log-then-immediately-self-grade with hindsight. Two anchors now bound it — locked_at is server-authored
-# (not analyst-controllable) and resolved_at is bounded to real time (see _MAX_RESOLVED_AT_SKEW_S), so the
-# gap cannot be inflated by asserting a far-future resolved_at. RESIDUAL: an analyst who already knows the
-# outcome can still WAIT OUT this window in real time before self-grading — real enforcement is procedural
-# (the calling skill/analyst). It catches the same-day / ISO-duration-horizon case the horizon signal misses;
-# advisory only — early resolution is legitimate and nothing is excluded from scoring.
+# log-then-immediately-self-grade with hindsight. Two anchors bound it — locked_at is server-authored (not
+# analyst-controllable) and resolved_at is bounded to real time (see _MAX_RESOLVED_AT_SKEW_S), so the gap
+# cannot be inflated by asserting a far-future resolved_at. It catches the unparseable-horizon (free-form /
+# ISO-8601-duration) log-then-self-grade case the horizon signal misses. RESIDUAL (Cal-S1): the horizon can
+# EXEMPT a fast resolution only if it is a real commitment (>= _MIN_CERTIFYING_HORIZON_S past the lock), so
+# evasion requires either waiting out this 24h window OR setting a genuine horizon and waiting THAT out in
+# real time — a timestamp-only heuristic cannot distinguish a genuine short forecast from a disguised one
+# below that floor. Advisory only — early resolution is legitimate and nothing is excluded from scoring.
 _MIN_RESOLUTION_LATENCY_S = 86400  # 24h
+
+# A parseable horizon may CERTIFY on-schedule resolution (exempting the latency flag above) only if it is at
+# least this far past the lock — a real deadline, not a self-chosen near-instant horizon set to launder a
+# fast self-grade (Cal-S1). Genuine short-fuse forecasts (hours / next-day) still certify; a lock+60s does not.
+_MIN_CERTIFYING_HORIZON_S = 3600  # 1h
 
 # resolved_at is analyst-asserted; bound it to the server clock on BOTH ends. The lower bound (>= locked_at)
 # blocks backdating; this upper bound blocks forward-dating — without it an analyst who already knows the
@@ -543,11 +550,22 @@ class CalibrationStore:
                     n_horizon_skipped += (
                         1  # non-date horizon (free-form OR ISO-8601 duration) — no signal
                     )
-                # Cal-C: fire the latency flag ONLY where the horizon signal could not vouch for the timing —
-                # an unparseable horizon, or a resolution that also landed before its horizon. A parseable
-                # horizon the resolution reached on/after is already certified on-schedule by signal (1); also
-                # flagging latency there would mark a normal short-fuse (e.g. next-day) forecast as hindsight.
-                if (not horizon_parseable) or resolved_before_this:
+                # Cal-C + Cal-S1: the horizon CERTIFIES on-schedule resolution (exempting the latency flag)
+                # only if it is parseable, the resolution landed on/after it, AND it was a real commitment — at
+                # least _MIN_CERTIFYING_HORIZON_S past the lock. A parseable-but-near-instant self-chosen horizon
+                # cannot launder a fast self-grade; a genuine short-fuse forecast (hours/next-day) still certifies.
+                # Any parse failure (incl. a corrupt server-authored locked_at) falls through to "does not
+                # certify" and the latency check runs.
+                horizon_certifies = horizon_parseable and not resolved_before_this
+                if horizon_certifies:
+                    try:
+                        horizon_lead = (
+                            _parse_iso(r["horizon"]) - _parse_iso(r["locked_at"])
+                        ).total_seconds()
+                        horizon_certifies = horizon_lead >= _MIN_CERTIFYING_HORIZON_S
+                    except ValueError:
+                        horizon_certifies = False
+                if not horizon_certifies:
                     try:
                         gap = (
                             _parse_iso(res["resolved_at"]) - _parse_iso(r["locked_at"])

@@ -278,8 +278,35 @@ def test_min_latency_skips_on_schedule_short_fuse(store, monkeypatch):
     assert r.n == 1
     assert r.n_horizon_checked == 1 and r.n_horizon_skipped == 0  # horizon parsed and was compared
     assert r.resolved_before_horizon == 0  # resolved AFTER the horizon -> on schedule
-    # the gap is <24h, but the horizon vouched for the timing, so latency must NOT fire (no false positive).
+    # the gap is <24h, but the horizon (2h out, >= the 1h certifying floor) vouched for the timing, so the
+    # latency flag must NOT fire (no false positive on a genuine short-fuse forecast).
     assert r.resolved_within_min_latency == 0
+
+
+def test_min_latency_flags_near_instant_self_chosen_horizon(store, monkeypatch):
+    # Cal-S1: a self-chosen horizon set just seconds past the lock must NOT certify away the latency flag —
+    # otherwise an analyst who already knows the outcome sets horizon = lock+60s, resolves just after, and
+    # evades both signals. The 1h certifying floor closes that loophole while sparing genuine short-fuse ones.
+    monkeypatch.setattr(
+        "mcp_servers.calibration_tracker.store.now_iso", lambda: "2026-03-01T09:00:00+00:00"
+    )
+    f = store.log_forecast(
+        "ni", "knows already?", 0.6, "def", "2026-03-01T09:01:00+00:00", "analyst_confirmed"
+    )  # horizon only 60s after the lock — far under the 1h floor
+    monkeypatch.setattr(
+        "mcp_servers.calibration_tracker.store.now_iso", lambda: "2026-03-01T09:02:00+00:00"
+    )
+    store.resolve_forecast(
+        f.forecast_id, True, "2026-03-01T09:02:00+00:00"
+    )  # on/after the tiny horizon
+    monkeypatch.undo()
+    r = store.get_calibration_report(case_id="ni")
+    assert r.n == 1
+    assert (
+        r.n_horizon_checked == 1 and r.resolved_before_horizon == 0
+    )  # parsed, resolved after horizon
+    # ...but the horizon was too close to the lock to vouch, so the latency flag STILL fires (loophole closed).
+    assert r.resolved_within_min_latency == 1
 
 
 # --- S2: malformed pagination cursor is a business error, not a raw ValueError leak ---

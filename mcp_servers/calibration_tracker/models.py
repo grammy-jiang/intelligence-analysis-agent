@@ -97,11 +97,13 @@ class CalibrationReport(BaseModel):
         default=0,
         description=(
             "ADVISORY audit signal keyed to the SERVER-authored locked_at (not the analyst-authored horizon): "
-            "count of forecasts resolved within 24h of lock WHERE the horizon signal could not certify the "
-            "timing (unparseable horizon, or resolved before horizon) — flags the log-then-immediately-self-"
-            "grade pattern the horizon signal misses, without flagging a normal short-fuse forecast. resolved_at "
-            "is bounded to real time (anti-forward-dating) so the gap is real; residual: an analyst can still "
-            "wait out the window before self-grading. Advisory, not a gate; early resolution is legitimate."
+            "count of forecasts resolved within 24h of lock WHERE the horizon could not certify the timing — an "
+            "unparseable horizon, a resolution before its horizon, OR a horizon set less than an hour past the "
+            "lock (too near to vouch, so a self-chosen near-instant horizon cannot launder a fast self-grade). "
+            "Flags the log-then-self-grade pattern the horizon signal misses, without flagging a genuine "
+            "short-fuse forecast. resolved_at is bounded to real time, so the gap is real; residual: an analyst "
+            "can still wait out the 24h window (or a genuine horizon) before self-grading. Advisory, not a gate; "
+            "early resolution is legitimate."
         ),
     )
     brier: float | None
